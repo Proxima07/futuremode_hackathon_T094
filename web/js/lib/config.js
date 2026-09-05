@@ -7,7 +7,7 @@
 
 export const CONFIG = {
   /** 版本戳記。console 會印出來，用來確認載入的不是快取的舊檔 */
-  BUILD: "v0.33",
+  BUILD: "v0.34",
 
   /** 快層迴圈的頻率。10 次/秒足夠流暢，又不會把手機電力燒光 */
   FPS: 10,
@@ -24,17 +24,38 @@ export const CONFIG = {
   /** 本機小縮圖每 250ms 看一次移動；遠端構圖仍以一秒為目標。 */
   SCAN_INTERVAL_MS: 250,
 
-  /** 明確操作指示至少顯示多久（毫秒）；只管閱讀時間，不減慢背景判斷。 */
-  GUIDANCE_HOLD_MS: 5000,
+  /**
+   * 明確操作指示至少顯示多久（毫秒）。
+   *
+   * 只管「文字什麼時候能被換掉」，不減慢背景判斷。
+   * 使用者要讀完、抬頭、動手、再低頭確認，五秒其實偏短。
+   *
+   * 想再慢一點就調大這個值。主體消失、到達目標、
+   * 畫面大幅改變仍然會立刻打斷，不會卡住。
+   */
+  GUIDANCE_HOLD_MS: 7000,
 
   /** 每秒只在本機算曝光；首次／明顯且持續的光線變化才送 /api/light。 */
   LIGHT_CHECK_INTERVAL_MS: 1000,
   LIGHT_CHANGE: { confirmations: 3, minIntervalMs: 15000,
     meanDelta: .10, subjectDelta: .12, colorDelta: .16, directionDelta: .14, clipDelta: .12 },
   /** 本機偏暗提醒：連續兩次成立／恢復才切換。是影像亮度近似值，非照度計。 */
+  /**
+   * 本機偏暗提醒的門檻。
+   *
+   * 原本的 darkMean .20 / darkSubject .26 太寬鬆——
+   * 那已經是相當暗的畫面了，使用者早就覺得「這樣拍不行」，
+   * 系統卻還說可以。實測回報「畫面有點黑但它說可以拍」就是這個原因。
+   *
+   * 調高之後會更早提醒補光。代價是在刻意的暗調場景
+   * （夜店、燭光）可能偶爾誤報，但那比漏報好——
+   * 漏報的結果是使用者拍出一張沒辦法用的照片。
+   *
+   * 這是影像亮度的近似值，不是照度計。
+   */
   LIGHT_READABILITY: { confirmations: 2, recoveryConfirmations: 2,
-    darkMean: .20, darkSubject: .26, backlitSubject: .28, backlitRatio: .55,
-    recoveryMargin: .04 },
+    darkMean: .28, darkSubject: .34, backlitSubject: .36, backlitRatio: .62,
+    recoveryMargin: .05 },
   /** 沒有空檔時，至少先完成八次構圖才讓待處理的光線事件插入。 */
   LIGHT_PLAN_BUDGET: 8,
   /** 太舊的照片即使形狀相似也不再套用，避免呈現十秒前的判斷。 */
@@ -64,8 +85,13 @@ export const CONFIG = {
     guidanceConfirmations: 2,
     /** 網路中斷／很慢時，過期證據不能和新影格湊票 */
     evidenceMaxAgeMs: 10000,
-    /** 同方向提示隨新結論更新，最多每秒一次；改方向仍需連續確認。 */
-    adviceRefreshMs: 1000,
+    /**
+     * 同方向提示隨新結論更新的最短間隔。
+     *
+     * 一秒太快了。使用者還在照著上一句做，文字就換掉，
+     * 會覺得系統很躁。拉長到兩秒半，改方向仍然需要連續確認。
+     */
+    adviceRefreshMs: 2500,
   },
 
   /**
@@ -98,6 +124,31 @@ export const CONFIG = {
  * 各種 slot 類型的顏色。
  * 和 layouts-preview.html 保持一致，方便對照。
  */
+/**
+ * 介面開關。
+ *
+ * 這些值可以被後端的 /api/ui-config 覆寫，
+ * 也就是可以在 .env 裡調整，不用改程式碼。
+ * 見 docs/06-RUNBOOK.md 的「介面開關」一節。
+ */
+export const UI = {
+  /** 顯示「持續判斷中・回覆 2.3 秒前」那條狀態列 */
+  showAnalysisStatus: true,
+  /** 顯示除錯面板的快捷鍵是否有效 */
+  allowDebugPanel: true,
+  /** 用兩指手勢縮放，而不是固定在畫面上的滑桿 */
+  pinchZoom: true,
+};
+
+/** 套用後端傳來的介面開關 */
+export function applyUiConfig(remote) {
+  if (!remote || typeof remote !== "object") return UI;
+  for (const key of Object.keys(UI)) {
+    if (typeof remote[key] === "boolean") UI[key] = remote[key];
+  }
+  return UI;
+}
+
 export const COLORS = {
   hero: "#4ade80",
   tall_or_large: "#60a5fa",

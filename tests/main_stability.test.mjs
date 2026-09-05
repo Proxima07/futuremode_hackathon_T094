@@ -12,6 +12,7 @@ import { applyAdjust, toLayout } from "../web/js/layouts/adjust.js";
 import { LIGHT_TEXT } from "../web/js/guidance/phrases.js";
 import { CONFIG } from "../web/js/lib/config.js";
 import { ExposureGuard } from "../web/js/vision/exposureGuard.js";
+import { UI, applyUiConfig } from "../web/js/lib/config.js";
 
 function element() {
   return { dataset: {}, style: {}, textContent: "", children: [], disabled: false,
@@ -30,7 +31,11 @@ function app() {
     performance, setTimeout, clearTimeout, clearInterval, setInterval, ExposureGuard,
     PlanStabilizer, PLAN_PHASE, LayoutBadge, HintBar, INTENTS, DEFAULT_INTENT,
     ALL, getLayout, layoutsFor, applyAdjust, toLayout, LIGHT_TEXT, CONFIG,
-    resetSceneMemory() {}, camera: {}, devices: {} };
+    resetSceneMemory() {}, camera: {}, devices: {},
+    UI, applyUiConfig,
+    // main.js 啟動時會抓 /api/ui-config，測試環境沒有後端，
+    // 給一個必定失敗的 stub 讓它退回預設值即可。
+    fetch: () => Promise.reject(new Error("no server in tests")) };
   vm.runInNewContext(source + `
     hint = new HintBar(el.hint);
     badge = new LayoutBadge(el.badge, layoutsFor(state.intent), onManualPick);
@@ -195,14 +200,24 @@ test("expired directions are removed immediately while waiting for a new confirm
   assert.equal(JSON.stringify(a.state.layout), geometry);
 });
 
-test("composition READY waits for initial lighting without disabling manual capture", () => {
+/**
+ * v0.33 的行為是「光線還沒回來就不算 ready」。
+ *
+ * 但 v0.32 起光線改成只在首次或明顯變化時才呼叫，
+ * 最短間隔 15 秒。結果構圖明明對好了，快門卻一直不變綠，
+ * 狀態列永遠停在「確認光線中」。
+ *
+ * 光線是輔助資訊，不該是構圖完成的前提。
+ * 只有「明確判定有問題」才擋，未知一律視為可拍。
+ */
+test("光線未知不該擋住可拍攝", () => {
   const a = app(); a.onPlan(plan()); a.onPlan(plan());
   a.onPlan(ready()); a.onPlan(ready());
   assert.equal(a.stabilizer.phase, "ready");
-  assert.equal(a.el.shutter.dataset.ready, "false");
+  assert.equal(a.el.shutter.dataset.ready, "true", "光線還沒回來也要能拍");
   assert.equal(a.el.shutter.disabled, false);
-  assert.match(a.el.status.textContent, /確認光線/);
-  assert.doesNotMatch(a.el.hint.textContent, /可以拍攝/);
+  assert.match(a.el.status.textContent, /可以拍攝/);
+  // 光線之後回來說沒問題，狀態不該倒退
   a.onLight({verdict: "good", source: "left"});
   assert.equal(a.el.shutter.dataset.ready, "true");
 });
@@ -213,7 +228,7 @@ test("READY retains exact fill advice and fixed geometry, then recovers when lig
   a.onLight({verdict: "problem", issue: "too_dark", fill_from: "front",
     tip: "保留藍紫背景，從正面加一點柔光照亮杯身"});
   assert.match(a.el.light.textContent, /正面加一點柔光/);
-  assert.match(a.el.status.textContent, /光線待調整/);
+  assert.match(a.el.status.textContent, /建議先補光/);
   assert.equal(a.el.shutter.dataset.ready, "false");
   assert.equal(a.el.shutter.disabled, false);
   assert.equal(JSON.stringify(a.state.layout), geometry);

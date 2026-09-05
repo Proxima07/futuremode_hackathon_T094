@@ -66,6 +66,22 @@ async def health():
     return {"ok": True, "service": "snapfit"}
 
 
+@app.get("/api/ui-config")
+async def ui_config():
+    """介面開關。前端啟動時抓一次。
+
+    讓「畫面上要不要顯示某個東西」可以在 .env 調整，
+    不用改前端程式碼再重新部署。
+    """
+    from server.config import settings
+
+    return {
+        "showAnalysisStatus": settings.SHOW_ANALYSIS_STATUS,
+        "allowDebugPanel": settings.ALLOW_DEBUG_PANEL,
+        "pinchZoom": settings.PINCH_ZOOM,
+    }
+
+
 @app.post("/api/warmup")
 async def warmup():
     """熱身。

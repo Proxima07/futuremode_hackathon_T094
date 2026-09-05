@@ -25,7 +25,21 @@ def _float(key: str, default: float) -> float:
         return default
 
 
+def _bool(key: str, default: bool) -> bool:
+    v = os.getenv(key)
+    if v is None or v.strip() == "":
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on")
+
+
 class Settings:
+    # ── 介面開關 ──────────────────────────────
+    # 這幾個會透過 /api/ui-config 傳給前端，
+    # 讓你不用改程式碼就能關掉畫面上的東西。
+    SHOW_ANALYSIS_STATUS = _bool("SHOW_ANALYSIS_STATUS", True)
+    ALLOW_DEBUG_PANEL = _bool("ALLOW_DEBUG_PANEL", True)
+    PINCH_ZOOM = _bool("PINCH_ZOOM", True)
+
     # Provider 優先序，由左到右 fallback
     PROVIDER_CHAIN = [
         s.strip()

@@ -299,3 +299,21 @@ html, body {
   pointer-events: none;
 }
 #debug.hidden { display: none; }
+
+/* ── 兩指縮放的倍率標示 ─────────────────────────
+   只在縮放時淡入，一秒後消失。
+   固定的滑桿會擋住取景區域，而取景是這個產品的全部。 */
+.zoom-hud {
+  position: absolute;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 10px 20px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .6);
+  color: #fff;
+  font-size: 22px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  transition: opacity .25s;
+}
+.zoom-hud.hidden { opacity: 0; }

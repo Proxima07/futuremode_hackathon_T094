@@ -22,14 +22,27 @@ import { OverlayCanvas } from "./ui/overlayCanvas.js";
 import { HintBar } from "./ui/hintBar.js";
 import { LayoutBadge } from "./ui/layoutBadge.js";
 import { ZoomControl } from "./ui/zoomControl.js";
+import { PinchZoom } from "./ui/pinchZoom.js";
 import { IntentPicker, CameraPicker } from "./ui/pickers.js";
 import { INTENTS, DEFAULT_INTENT } from "./intents.js";
 import { ALL, getLayout, layoutsFor } from "./layouts/index.js";
 import { applyAdjust, toLayout } from "./layouts/adjust.js";
 import { LIGHT_TEXT } from "./guidance/phrases.js";
-import { CONFIG } from "./lib/config.js";
+import { CONFIG, UI, applyUiConfig } from "./lib/config.js";
 
 console.log(`[SnapFit] ${CONFIG.BUILD ?? "版本不明（config.js 可能是快取的舊檔）"}`);
+
+/**
+ * 從後端拿介面開關。抓不到就用 config.js 的預設值，
+ * 不要因為這個擋住相機啟動。
+ */
+async function loadUiConfig() {
+  try {
+    const res = await fetch("/api/ui-config");
+    if (res.ok) applyUiConfig(await res.json());
+  } catch { /* 用預設值 */ }
+  console.log("[SnapFit] 介面開關", JSON.stringify(UI));
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -42,6 +55,8 @@ const el = {
   intent: $("intentPicker"),
   camera: $("cameraPicker"),
   zoom: $("zoomControl"),
+  zoomHud: $("zoomHud"),
+  app: $("app"),
   shutter: $("shutter"),
   status: $("compositionStatus"),
   analysis: $("analysisStatus"),
@@ -52,7 +67,8 @@ const el = {
   debug: $("debug"),
 };
 
-let overlay, hint, badge, intentPicker, cameraPicker, zoomControl, planner, debugTimer;
+let overlay, hint, badge, intentPicker, cameraPicker;
+let zoomControl, pinchZoom, planner, debugTimer;
 const stabilizer = new PlanStabilizer(CONFIG.STABILITY);
 const exposureGuard = new ExposureGuard(CONFIG.LIGHT_READABILITY);
 
@@ -97,6 +113,8 @@ function render() {
 
 // ── 啟動 ────────────────────────────────────────────
 // iOS Safari 必須由使用者主動點擊才能開相機
+
+loadUiConfig();
 
 el.start.addEventListener("click", async () => {
   el.start.disabled = true;
@@ -150,12 +168,26 @@ async function onCameraReady() {
   cameraPicker ??= new CameraPicker(el.camera, onCameraSwitch);
   cameraPicker.setDevices(cameras, camera.currentDevice());
 
-  zoomControl ??= new ZoomControl(el.zoom, async (value) => {
+  /**
+   * 縮放。預設用兩指手勢，滑桿只在 .env 關掉手勢時才出現。
+   *
+   * 滑桿一直浮在畫面上會擋住取景區域，而取景就是這個產品的全部。
+   * 兩指縮放是相機 App 的通用手勢，不用教，也不佔畫面。
+   */
+  const applyZoom = async (value) => {
     resumeForView();
     try { return await camera.setZoom(value); }
     finally { resumeForView(); }
-  });
-  zoomControl.configure(camera.zoomInfo());
+  };
+
+  if (UI.pinchZoom) {
+    el.zoom?.classList.add("hidden");
+    pinchZoom ??= new PinchZoom(el.app ?? document.body, el.zoomHud, applyZoom);
+    pinchZoom.configure(camera.zoomInfo());
+  } else {
+    zoomControl ??= new ZoomControl(el.zoom, applyZoom);
+    zoomControl.configure(camera.zoomInfo());
+  }
 
   state.light = null;
   hint.set("正在看畫面…", "info", {immediate: true});
@@ -245,13 +277,29 @@ function onPlanDeferred({reason = "moving"} = {}) {
 function syncPhase() {
   const phase = stabilizer.phase;
   const light = effectiveLight();
-  const lightReady = !!light && light.verdict !== "problem";
+
+  /**
+   * ────────────────────────────────────────────────
+   * 「還沒判斷光線」不等於「光線有問題」。
+   *
+   * v0.33 寫的是 `!!light && light.verdict !== "problem"`，
+   * 光線還沒回來時 lightReady 就是 false。
+   * 而 v0.32 起光線改成「只在首次或明顯變化時才呼叫」，
+   * 間隔最少 15 秒——所以構圖對好了也會一直卡在
+   * 「構圖已到位・光線待調整」，快門永遠不變綠。
+   *
+   * 現在只有「明確判定有問題」才擋，未知一律視為可拍。
+   * 光線是輔助資訊，不該是構圖完成的前提。
+   * ────────────────────────────────────────────────
+   */
+  const lightBlocking = !!light && light.verdict === "problem";
+  const lightReady = !lightBlocking;
+
   badge?.setPhase(phase);
   el.status.dataset.phase = phase;
   el.status.textContent = {
     searching: "選擇構圖中", guiding: "目標已固定",
-    ready: !light ? "構圖已到位・確認光線中"
-      : lightReady ? "✓ 可以拍攝" : "構圖已到位・光線待調整",
+    ready: lightBlocking ? "構圖已到位・建議先補光" : "✓ 可以拍攝",
   }[phase];
   el.shutter.dataset.ready = String(phase === PLAN_PHASE.READY && lightReady);
   updateHint(state.items);
@@ -262,6 +310,13 @@ function syncPhase() {
 /** 區分「有在取樣」與「模型真的回覆了」，不要把網路 log 當成完成判斷。 */
 function updateAnalysisStatus(activity) {
   if (!el.analysis) return;
+  // .env 的 SHOW_ANALYSIS_STATUS=false 可以整條關掉。
+  // Demo 時建議關掉，它會讓畫面看起來一直在忙。
+  if (!UI.showAnalysisStatus) {
+    el.analysis.classList.add("hidden");
+    return;
+  }
+  el.analysis.classList.remove("hidden");
   let text;
   if (!activity.running) {
     text = "等待相機啟動";
@@ -366,6 +421,7 @@ async function onCameraSwitch(deviceId) {
     console.log(`切換完成 ${res.width}x${res.height}`);
     devices.remember(deviceId);
     zoomControl?.configure(camera.zoomInfo());
+      pinchZoom?.configure(camera.zoomInfo());
     resetSceneMemory();
     hint.set("正在看畫面…", "info");
   } catch (err) {
@@ -375,6 +431,7 @@ async function onCameraSwitch(deviceId) {
     try {
       await camera.start(el.video, onCameraLost);
       zoomControl?.configure(camera.zoomInfo());
+      pinchZoom?.configure(camera.zoomInfo());
       cameraPicker?.setDevices(await devices.list(), camera.currentDevice());
     } catch { /* 真的救不回來就交給 onCameraLost */ }
   } finally {
@@ -761,7 +818,7 @@ window.addEventListener("keydown", (e) => {
     render();
   }
 
-  if (k === "d") {
+  if (k === "d" && UI.allowDebugPanel) {
     el.debug?.classList.toggle("hidden");
     clearInterval(debugTimer);
     if (!el.debug?.classList.contains("hidden")) {
