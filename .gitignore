@@ -7,3 +7,4 @@ __pycache__/
 assets/voice/*.mp3
 web/js/vendor/*.js
 .DS_Store
+.docs/
