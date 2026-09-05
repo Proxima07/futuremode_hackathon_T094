@@ -65,6 +65,7 @@ const state = {
   features: {},
   progress: "searching",
   awaitingCustom: false,
+  viewPending: false,
   remove: [],
   advice: "",
   scene: "",
@@ -160,8 +161,9 @@ async function onCameraReady() {
 
   planner ??= new RemotePlanner(el.video, getPlanContext, {
     onPlan, onLight, onCustom, onViewChanged: resumeForView,
-    onActivity: updateAnalysisStatus,
+    onActivity: updateAnalysisStatus, onPlanDeferred,
   });
+  planner.resetLighting();
   startAnalysis();
   planner.start();
 
@@ -181,6 +183,7 @@ function onManualPick(picked) {
   state.remove = [];
   state.advice = "";
   state.awaitingCustom = false;
+  state.viewPending = false;
   state.progress = "guiding";
   stabilizer.forceLock({ layout: picked.id });
   planner?.invalidate();
@@ -189,6 +192,7 @@ function onManualPick(picked) {
 
 /** 只有明確重新分析／情境切換／主體持續消失，才重新選目標。 */
 function startAnalysis({ preserveManual = false } = {}) {
+  state.viewPending = false;
   state.items = {};
   state.features = {};
   state.remove = [];
@@ -218,6 +222,15 @@ function resumeForView() {
   syncPhase();
 }
 
+function onPlanDeferred({reason = "moving"} = {}) {
+  const changed = !state.viewPending || state.progress !== reason;
+  state.viewPending = true;
+  state.progress = reason;
+  stabilizer.deferObservation();
+  planner?.setPlanPaused(false);
+  if (changed) syncPhase();
+}
+
 function syncPhase() {
   const phase = stabilizer.phase;
   badge?.setPhase(phase);
@@ -240,19 +253,24 @@ function updateAnalysisStatus(activity) {
   } else if (activity.paused) {
     text = "已暫停，回到畫面後繼續判斷";
   } else {
-    const age = Number.isFinite(activity.lastPlanResultAt)
-      ? `${Math.max(0, (performance.now() - activity.lastPlanResultAt) / 1000).toFixed(1)} 秒前`
+    const age = Number.isFinite(activity.lastPlanResponseAt)
+      ? `${Math.max(0, (performance.now() - activity.lastPlanResponseAt) / 1000).toFixed(1)} 秒前`
       : null;
     if (activity.outcome === "error") {
-      text = "判斷暫無回應，正在重試";
-    } else if (activity.outcome === "stale") {
-      text = "畫面已改變，正在重新判斷";
+      text = activity.responseMeta?.fallback
+        ? "收到回覆，但分析未完成・正在重試"
+        : "判斷暫無回應，正在重試";
+    } else if (activity.viewPending || ["moving", "expired"].includes(activity.outcome)) {
+      text = activity.deferReason === "expired"
+        ? "正在取得最新畫面的判斷"
+        : "畫面已移動・正在確認新位置";
+      if (age) text += `・回覆 ${age}`;
     } else if (activity.activeKind === "plan") {
-      text = age ? `判斷中・最近判斷 ${age}` : "正在判斷畫面…";
+      text = age ? `持續判斷中・回覆 ${age}` : "正在判斷畫面…";
     } else if (activity.activeKind === "custom") {
       text = "正在建立構圖方案…";
     } else if (age) {
-      text = `持續掃描中・最近判斷 ${age}`;
+      text = `持續確認構圖・回覆 ${age}`;
     } else {
       text = "掃描畫面中，等待首次判斷…";
     }
@@ -312,6 +330,7 @@ function onIntentChange(intent) {
   state.layout = list[0];
   state.items = {};
   state.light = null;
+  planner?.resetLighting();
 
   badge.layouts = list;
   badge.index = 0;
@@ -323,6 +342,7 @@ function onIntentChange(intent) {
 
 async function onCameraSwitch(deviceId) {
   planner?.stop();
+  planner?.resetLighting();
   startAnalysis();
   state.light = null;
   hint.set("切換鏡頭…", "info");
@@ -369,6 +389,7 @@ function onCameraLost() {
 function onPlan(plan) {
   state.lastPlanAt = performance.now();
   if (state.awaitingCustom) return true;
+  state.viewPending = false;
   const event = stabilizer.ingest(plan);
   state.progress = event.kind;
 
@@ -412,7 +433,6 @@ function onPlan(plan) {
 
 /** 光線分析回來。獨立路徑，不影響版型 */
 function onLight(light) {
-  if (stabilizer.phase === PLAN_PHASE.READY) return;
   state.light = light;
   updateLightBar();
 }
@@ -463,6 +483,12 @@ function applyItems(placements, onlyMissing = false) {
 
 function updateHint(items) {
   if (!hint) return;
+  if (state.viewPending) {
+    hint.set(state.progress === "expired"
+      ? "沿用固定目標，正在確認最新畫面"
+      : "位置已改變，停穩一下確認是否到位", "info");
+    return;
+  }
   if (stabilizer.phase === PLAN_PHASE.READY) {
     hint.set("構圖完成，可以拍攝", "good");
     return;
@@ -483,6 +509,10 @@ function updateHint(items) {
   }
   if (state.progress === "ready_pending") {
     hint.set("已接近目標，保持一下確認構圖…", "info");
+    return;
+  }
+  if (state.progress === "guidance_pending") {
+    hint.set("正在確認下一步微調，先保持目前位置", "info");
     return;
   }
   if (state.progress === "resumed") {
@@ -646,7 +676,12 @@ function updateDebug() {
     `環境 ${l ? `${l.env} [${l.verdict}]${l.issue !== "none" ? " " + l.issue : ""}` : "尚未判斷"}`,
     `光線 ${l ? `來源:${l.source} 補:${l.fill_from} 角度:${l.shoot_from}` : "—"}`,
     `  建議 ${l?.tip || "—"}`,
-    `構圖延遲 ${Math.round(planner?.lastPlanLatency ?? 0)}ms · ${age} · 失敗 ${planner?.failuresByKind?.plan ?? 0}`,
+    `構圖延遲 ${Math.round(planner?.lastPlanLatency ?? 0)}ms · 採用 ${age} · 失敗 ${planner?.failuresByKind?.plan ?? 0}`,
+    `收到 ${planner?.stats.responses ?? 0} · 採用 ${planner?.stats.applied ?? 0}` +
+      ` · 過期 ${planner?.stats.skip ?? 0} · fallback ${planner?.stats.fallback ?? 0}`,
+    `畫面差異 原始 ${planner?.lastFrameDifference?.rawDifference?.toFixed(1) ?? "—"}` +
+      ` · 手震補償 ${planner?.lastFrameDifference?.difference?.toFixed(1) ?? "—"}`,
+    `光線事件 ${planner?.lightMonitor?.reason || "無"} · 待分析 ${!!planner?.lightMonitor?.pending}`,
     `構圖起始間隔 ${planner?.lastPlanGap == null ? "—" : Math.round(planner.lastPlanGap) + "ms"}` +
       ` · 目標 ${CONFIG.PLAN_INTERVAL_MS}ms · 取樣 ${planner?.stats.scan ?? 0} 次`,
     `呼叫 plan ${planner?.stats.plan} · light ${planner?.stats.light}` +

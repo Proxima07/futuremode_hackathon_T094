@@ -7,7 +7,7 @@
 
 export const CONFIG = {
   /** 版本戳記。console 會印出來，用來確認載入的不是快取的舊檔 */
-  BUILD: "v0.31",
+  BUILD: "v0.32",
 
   /** 快層迴圈的頻率。10 次/秒足夠流暢，又不會把手機電力燒光 */
   FPS: 10,
@@ -21,17 +21,17 @@ export const CONFIG = {
    */
   PLAN_INTERVAL_MS: 1000,
 
-  /** 本機畫面取樣獨立於網路，模型正在推論時仍每秒檢查一次。 */
-  SCAN_INTERVAL_MS: 1000,
+  /** 本機小縮圖每 250ms 看一次移動；遠端構圖仍以一秒為目標。 */
+  SCAN_INTERVAL_MS: 250,
 
-  /**
-   * 光線分析的間隔。
-   * 房間的光線幾秒內不會變，不需要跟物品位置一樣頻繁。
-   * 拉長它可以大幅減少 VLM 的負擔。
-   */
-  LIGHT_INTERVAL_MS: 6000,
-  /** 光線優先填入構圖空檔；忙碌約 30 秒後安排更新，關鍵確認期間除外。 */
-  LIGHT_MAX_DEFER_MS: 30000,
+  /** 每秒只在本機算曝光；首次／明顯且持續的光線變化才送 /api/light。 */
+  LIGHT_CHECK_INTERVAL_MS: 1000,
+  LIGHT_CHANGE: { confirmations: 3, minIntervalMs: 15000,
+    meanDelta: .10, colorDelta: .16, directionDelta: .14, clipDelta: .12 },
+  /** 沒有空檔時，至少先完成八次構圖才讓待處理的光線事件插入。 */
+  LIGHT_PLAN_BUDGET: 8,
+  /** 太舊的照片即使形狀相似也不再套用，避免呈現十秒前的判斷。 */
+  PLAN_MAX_FRAME_AGE_MS: 5000,
 
   /**
    * 動態版型的最短重生間隔。
@@ -57,8 +57,8 @@ export const CONFIG = {
     guidanceConfirmations: 2,
     /** 網路中斷／很慢時，過期證據不能和新影格湊票 */
     evidenceMaxAgeMs: 10000,
-    /** 同方向的提示文字也可以更新，但最多每兩秒一次，避免文字閃動。 */
-    adviceRefreshMs: 2000,
+    /** 同方向提示隨新結論更新，最多每秒一次；改方向仍需連續確認。 */
+    adviceRefreshMs: 1000,
   },
 
   /**

@@ -183,6 +183,7 @@ html, body {
   border-radius: 999px;
   background: rgba(20, 20, 24, .78);
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
   color: #cfcfda;
   text-align: center;
   pointer-events: none;

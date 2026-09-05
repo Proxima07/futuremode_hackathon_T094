@@ -3,11 +3,13 @@
  *
  * 原則：**永遠不要 throw。**
  * 網路失敗、後端掛掉、格式不對，一律回傳 null，
- * 呼叫端就繼續用目前的版型。使用者不該看到錯誤訊息。
+ * 呼叫端保留目前版型，並用簡短狀態說明重試；不把技術錯誤直接丟給使用者。
  */
 
 import { CONFIG } from "./config.js";
 import { visibleRegion } from "../vision/exposure.js";
+import { frameDifference } from "../vision/frameFreshness.js";
+export { frameDifference } from "../vision/frameFreshness.js";
 
 // ── 影格擷取 ────────────────────────────────────────
 // 重複使用同一組 canvas。
@@ -58,13 +60,8 @@ export function grabFrame(video, maxEdge = CONFIG.IMAGE_MAX_EDGE) {
 /**
  * 畫面變化偵測。
  *
- * 把畫面縮成 32x32 的灰階指紋，和上一次比較平均差異。
- * 這是很便宜的計算（1024 個像素），但足以判斷
- * 「使用者是不是在搬東西」。
- *
- * 為什麼需要：原本每 800ms 就送一次 VLM，
- * 即使畫面完全沒動也照送。三分鐘的 Demo 就是兩百多次呼叫，
- * 白白吃掉額度和電力，而且結果也不會變。
+ * 把畫面縮成 32x32 的灰階指紋，供排程器近似比較視野是否改變。
+ * 它不辨識主體，也不能判定是否對準；靜止畫面仍須送模型確認構圖。
  */
 let lastThumb = null;
 
@@ -83,16 +80,6 @@ export function sampleFrame(video) {
   return gray;
 }
 
-/** 去除全域亮度偏移，降低自動曝光／燈光變化造成的誤觸發。不是物件追蹤器。 */
-export function frameDifference(a, b) {
-  if (!a || !b || a.length !== b.length) return Infinity;
-  const mean = (v) => v.reduce((sum, n) => sum + n, 0) / v.length;
-  const offset = mean(a) - mean(b);
-  let sum = 0;
-  for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i] - offset);
-  return sum / a.length;
-}
-
 export function sceneChanged(video, threshold = 6) {
   const gray = sampleFrame(video);
   if (!gray) return false;
@@ -109,17 +96,18 @@ export function resetSceneMemory() {
 // ── API ────────────────────────────────────────────
 
 /**
- * 請後端判斷版型、擺放方式與光線建議。
+ * 請後端選擇構圖，或檢查目前固定目標是否對準。
  *
  * @param {Object} payload
  * @param {string} payload.image      base64 JPEG
  * @param {string[]} payload.layouts  這個情境允許的版型 id
  * @param {string} payload.intent     使用情境
  * @param {Object} payload.current    目前正在用的版型，讓 VLM 判斷合不合用
- * @param {Object} payload.exposure   本機算出的曝光數字，補上 VLM 的盲點
+ * @param {AbortSignal} signal       工作階段切換時中止請求
+ * @param {Function} onResponse      回報 HTTP／fallback 狀態，與採用結果分開記錄
  * @returns {Promise<Object|null>} 失敗回傳 null
  */
-export async function requestPlan(payload, signal) {
+export async function requestPlan(payload, signal, onResponse) {
   try {
     const res = await fetch("/api/plan", {
       method: "POST",
@@ -127,8 +115,14 @@ export async function requestPlan(payload, signal) {
       body: JSON.stringify({ allow_custom: true, ...payload }),
       signal,
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      onResponse?.({ok: false, status: res.status, fallback: false});
+      return null;
+    }
     const data = await res.json();
+    // HTTP 200 也可能是後端 fallback；收到了回覆不代表取得可用構圖。
+    onResponse?.({ok: true, status: res.status, fallback: !!data?.fallback,
+      reason: typeof data?.reason === "string" ? data.reason : ""});
     return data?.fallback ? null : data;
   } catch {
     return null;      // 包含使用者中止、斷網、逾時
@@ -136,8 +130,7 @@ export async function requestPlan(payload, signal) {
 }
 
 /**
- * 光線分析。獨立端點，前端用比較慢的節奏呼叫。
- * 房間的光線幾秒內不會變，不需要跟著物品位置一起重算。
+ * 光線分析。獨立端點，由前端首次或偵測到持續的光線變化時呼叫。
  */
 export async function requestLight(payload, signal) {
   try {

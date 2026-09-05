@@ -9,9 +9,9 @@
  * 非常慢，實測會從 300ms 惡化到逾時。
  *
  * 按「變化速度」拆開：
- *   scan    每秒本機取樣，不受網路請求阻塞
+ *   scan    每 250ms 本機取樣，不受網路請求阻塞
  *   plan    所有階段都以每秒一次為目標，READY 也持續檢查固定目標
- *   light   房間的光不會變 → 每 6 秒
+ *   light   首次或本機確認光線明顯變化才分析
  *   custom  很少需要      → 只在 plan 說需要時，且有冷卻時間
  *
  * 拆開不是為了平行呼叫。同時打同一個端點只會讓兩邊都變慢，
@@ -23,11 +23,12 @@
 import { CONFIG } from "../lib/config.js";
 import {
   grabFrame, requestPlan, requestLight, requestCustom,
-  resetSceneMemory, sampleFrame, frameDifference,
+  resetSceneMemory, sampleFrame,
 } from "../lib/api.js";
 import { measure } from "../vision/exposure.js";
+import { comparePreviewFrames } from "../vision/frameFreshness.js";
+import { LightChangeMonitor } from "../vision/lightChangeMonitor.js";
 
-const VIEW_CHANGE_THRESHOLD = 12;
 const TICK_MS = 50;
 
 /**
@@ -46,9 +47,8 @@ function cfg(key, fallback) {
 }
 
 const PLAN_MS = () => Math.max(250, cfg("PLAN_INTERVAL_MS", 1000));
-const SCAN_MS = () => Math.max(250, cfg("SCAN_INTERVAL_MS", 1000));
-const LIGHT_MS = () => cfg("LIGHT_INTERVAL_MS", 6000);
-const LIGHT_MAX_DEFER_MS = () => cfg("LIGHT_MAX_DEFER_MS", 30000);
+const SCAN_MS = () => Math.max(100, cfg("SCAN_INTERVAL_MS", 250));
+const LIGHT_CHECK_MS = () => cfg("LIGHT_CHECK_INTERVAL_MS", 1000);
 const CUSTOM_MS = () => cfg("CUSTOM_COOLDOWN_MS", 15000);
 
 export class RemotePlanner {
@@ -64,6 +64,7 @@ export class RemotePlanner {
 
     this.running = false;
     this.runId = 0;
+    this.revision = 0;
     this.timer = null;
     this.dispatching = false;
     this.nextScanAt = 0;
@@ -79,6 +80,15 @@ export class RemotePlanner {
     this.lastPlanSent = null;
     this.lastScanAt = null;
     this.lastPlanResultAt = null;
+    this.lastPlanResponseAt = null;
+    this.lastAppliedFrameAt = null;
+    this.lastResponseMeta = null;
+    this.lastFrameDifference = null;
+    this.displayFrame = null;
+    this.previousFrame = null;
+    this.viewPending = false;
+    this.deferReason = "";
+    this.previewStable = true;
     this.lastPlanLatency = 0;
     this.lastPlanGap = null;
     this.lastLightLatency = 400;
@@ -90,9 +100,10 @@ export class RemotePlanner {
     this.changedFrames = 0;
     this.readyAt = 0;
 
-    // 第一次光線分析要早一點跑，不然使用者要等 6 秒才看得到東西。
-    // 設成「現在減去大部分的間隔」，第一輪就會輪到它。
-    this.lastLightSent = performance.now() - LIGHT_MS() + 1200;
+    this.lightMonitor = new LightChangeMonitor(CONFIG.LIGHT_CHANGE);
+    this.lightRevision = 0;
+    this.nextLightCheckAt = 0;
+    this.lastLightSent = null;
     /** 最近一次的光線結果，除錯面板會顯示 */
     this.lastLight = null;
 
@@ -100,7 +111,8 @@ export class RemotePlanner {
     this.failuresByKind = { plan: 0, light: 0, custom: 0 };
     this.lastLatency = 0;
     this.lastExposure = null;
-    this.stats = { scan: 0, plan: 0, light: 0, custom: 0, skip: 0 };
+    this.stats = { scan: 0, plan: 0, light: 0, custom: 0, skip: 0,
+      responses: 0, applied: 0, fallback: 0 };
 
     document.addEventListener("visibilitychange", () => {
       this.paused = document.hidden;
@@ -121,7 +133,7 @@ export class RemotePlanner {
     this.nextScanAt = 0;
     this.nextPlanAt = 0;
     console.log(
-      `[planner] 取樣 ${SCAN_MS()}ms · plan 目標 ${PLAN_MS()}ms（含 READY） · light ${LIGHT_MS()}ms · ` +
+      `[planner] 取樣 ${SCAN_MS()}ms · plan 目標 ${PLAN_MS()}ms（含 READY） · 光線變化才分析 · ` +
       `custom 冷卻 ${CUSTOM_MS()}ms`
     );
     this._tick(++this.runId);
@@ -154,20 +166,60 @@ export class RemotePlanner {
 
   /** 狀態切換時中止舊請求；sessionId 仍是忽略慢回應的最後防線。 */
   invalidate() {
+    this.revision++;
     this.controller?.abort();
     this.setPlanPaused(false);
     this.nextPlanAt = 0;
     this.nextScanAt = 0;
     this.failuresByKind.plan = 0;
     this.lastPlanResultAt = null;
+    this.lastPlanResponseAt = null;
+    this.lastAppliedFrameAt = null;
+    this.displayFrame = null;
+    this.previousFrame = null;
+    this.viewPending = false;
+    this.deferReason = "";
+    this.lastResponseMeta = null;
     this.planOutcome = "waiting";
     this._emitActivity();
+  }
+
+  /** 換鏡頭／拍攝情境才清除光線基準；單純重新對準不重做光線。 */
+  resetLighting() {
+    this.lightRevision++;
+    this.lightMonitor.reset();
+    this.nextLightCheckAt = 0;
+    this.lastLight = null;
+    this.lastExposure = null;
+  }
+
+  _deferPlan(reason = "moving") {
+    this.viewPending = true;
+    this.deferReason = reason;
+    this.planOutcome = reason;
+    this.on.onPlanDeferred?.({reason});
+  }
+
+  _observePreview(frame, now) {
+    this.previewStable = !this.previousFrame || comparePreviewFrames(this.previousFrame, frame).fresh;
+    this.previousFrame = frame;
+    if (this.displayFrame && !comparePreviewFrames(this.displayFrame, frame).fresh) {
+      this._deferPlan("moving");
+    } else if (this.lastAppliedFrameAt !== null && now - this.lastAppliedFrameAt > cfg("PLAN_MAX_FRAME_AGE_MS", 5000)) {
+      this._deferPlan("expired");
+    }
+    if (now >= this.nextLightCheckAt) {
+      this.nextLightCheckAt = now + LIGHT_CHECK_MS();
+      const ctx = this.getContext?.() ?? {};
+      this.lastExposure = measure(this.video, ctx.subjectBox ?? null);
+      this.lightMonitor.observe(this.lastExposure, {stable: this.previewStable});
+    }
   }
 
   _checkReadyView(frame = sampleFrame(this.video)) {
     if (!this.planPaused || performance.now() - this.readyAt < 500) return;
     if (!frame) return;
-    this.changedFrames = frameDifference(frame, this.readyFrame) > VIEW_CHANGE_THRESHOLD
+    this.changedFrames = !comparePreviewFrames(this.readyFrame, frame).fresh
       ? this.changedFrames + 1 : 0;
     if (this.changedFrames >= 2) this.on.onViewChanged?.();
   }
@@ -186,6 +238,9 @@ export class RemotePlanner {
       scans: this.stats.scan, lastScanAt: this.lastScanAt,
       lastPlanResultAt: this.lastPlanResultAt, lastPlanLatency: this.lastPlanLatency,
       lastPlanGap: this.lastPlanGap, outcome: this.planOutcome,
+      lastPlanResponseAt: this.lastPlanResponseAt, lastAppliedFrameAt: this.lastAppliedFrameAt,
+      responseMeta: this.lastResponseMeta, viewPending: this.viewPending,
+      deferReason: this.deferReason, responses: this.stats.responses,
     };
   }
 
@@ -203,6 +258,7 @@ export class RemotePlanner {
           if (frame) {
             this.lastScanAt = now;
             this.stats.scan++;
+            this._observePreview(frame, now);
             this._checkReadyView(frame);
           }
           this._emitActivity();
@@ -228,15 +284,14 @@ export class RemotePlanner {
       await this._runCustom();
       return;
     }
-    const lightAge = now - this.lastLightSent;
     const urgentConfirmation = !!this.getContext?.()?.confirming;
-    // 平常只用空檔做光線分析；模型很慢時偶爾讓光線更新，避免永久飢餓。
-    const lightOverdue = !this.planPaused && !urgentConfirmation &&
-      this.plansSinceLight >= 3 && lightAge >= LIGHT_MAX_DEFER_MS();
-    if (now >= this.nextPlanAt && !lightOverdue) {
+    const lightPending = this.lightMonitor.shouldAnalyze(now) && this.previewStable &&
+      !this.viewPending && !urgentConfirmation && this.lastPlanResultAt !== null;
+    // 只有確實存在光線事件時才爭取排程，不再有每 6／30 秒的強制定時分析。
+    const lightTurn = lightPending && this.plansSinceLight >= cfg("LIGHT_PLAN_BUDGET", 8);
+    if (now >= this.nextPlanAt && !lightTurn) {
       await this._runPlan();
-    } else if (!this.planPaused && !urgentConfirmation && lightAge >= LIGHT_MS() &&
-        (lightOverdue || this.nextPlanAt - now > this.lastLightLatency + 100)) {
+    } else if (lightPending && (lightTurn || this.nextPlanAt - now > this.lastLightLatency + 100)) {
       await this._runLight();
     }
   }
@@ -256,13 +311,22 @@ export class RemotePlanner {
     const ctx = this.getContext?.() ?? {};
     const sessionId = ctx.sessionId;
     const runId = this.runId;
+    const revision = this.revision;
     const startedAt = performance.now();
     this.lastPlanGap = this.lastPlanSent === null ? null : startedAt - this.lastPlanSent;
     this.lastPlanSent = startedAt;
     this.nextPlanAt = startedAt + this.interval;
-    this.planOutcome = "analyzing";
+    // 新請求開始時保留 moving/error，避免又顯示十秒前採用結果的倒數。
+    if (this.planOutcome === "waiting") this.planOutcome = "analyzing";
     const plan = await this._send(
-      requestPlan,
+      (payload, signal) => requestPlan(payload, signal, (meta) => {
+        if (runId !== this.runId || revision !== this.revision || signal.aborted) return;
+        if (sessionId !== undefined && this.getContext?.()?.sessionId !== sessionId) return;
+        this.lastPlanResponseAt = performance.now();
+        this.lastResponseMeta = meta;
+        this.stats.responses++;
+        if (meta.fallback) this.stats.fallback++;
+      }),
       {
         image: img,
         layouts: ctx.layouts ?? [],
@@ -276,7 +340,7 @@ export class RemotePlanner {
     );
 
     // 換情境、鏡頭或按下重新分析後，忽略舊工作階段回來的慢回應。
-    if (runId !== this.runId) return;
+    if (runId !== this.runId || revision !== this.revision) return;
     const latestSession = this.getContext?.()?.sessionId;
     if (sessionId !== undefined && latestSession !== sessionId) return;
     this.lastPlanLatency = performance.now() - startedAt;
@@ -288,22 +352,28 @@ export class RemotePlanner {
     }
     // 成功就恢復一秒目標，時間從開始推論算起，不再額外加 700ms。
     this.nextPlanAt = startedAt + PLAN_MS();
-    this.plansSinceLight++;
-
-    // 模型分析的是較早的照片；大幅移動後，舊 READY 和移動提示都不能套用。
-    if (frameDifference(submittedFrame, sampleFrame(this.video)) > VIEW_CHANGE_THRESHOLD) {
+    const comparison = comparePreviewFrames(submittedFrame, sampleFrame(this.video));
+    this.lastFrameDifference = comparison;
+    const expired = performance.now() - startedAt > cfg("PLAN_MAX_FRAME_AGE_MS", 5000);
+    if (!comparison.fresh || expired) {
       this.stats.skip++;
-      this.planOutcome = "stale";
+      this._deferPlan(expired ? "expired" : "moving");
       this._emitActivity();
       return;
     }
 
     // 主路徑只回報「需要動態版型」，實際生成走另一條路
     // 由前端共識控制器核准後才生成，不能讓單次 LLM 輸出繞過鎖定。
+    this.viewPending = false;
+    this.deferReason = "";
     this.needsCustom = this.on.onPlan?.(plan) === true;
     // onPlan 可能觸發重新分析，不能把上一輪完成時間放到新工作階段。
-    if (sessionId === undefined || this.getContext?.()?.sessionId === sessionId) {
+    if (revision === this.revision && (sessionId === undefined || this.getContext?.()?.sessionId === sessionId)) {
       this.lastPlanResultAt = performance.now();
+      this.lastAppliedFrameAt = startedAt;
+      this.displayFrame = submittedFrame;
+      this.stats.applied++;
+      this.plansSinceLight++;
       this.planOutcome = "updated";
     }
     this._emitActivity();
@@ -316,7 +386,7 @@ export class RemotePlanner {
     if (!img) {
       // 抓不到影格也要更新時間戳，否則下一輪還是輪到光線，
       // 主路徑就永遠排不上了
-      this.lastLightSent = performance.now();
+      this.lightMonitor.fail(performance.now());
       return;
     }
 
@@ -325,6 +395,8 @@ export class RemotePlanner {
     // 場地裡有一盞強燈就會壓過使用者真正要拍的東西。
     const ctx = this.getContext?.() ?? {};
     const runId = this.runId;
+    const revision = this.revision;
+    const lightRevision = this.lightRevision;
     const exposure = measure(this.video, ctx.subjectBox ?? null);
     this.lastExposure = exposure;
 
@@ -334,11 +406,12 @@ export class RemotePlanner {
       "light"
     );
 
-    if (runId !== this.runId) return;
+    if (runId !== this.runId || revision !== this.revision || lightRevision !== this.lightRevision) return;
     if (ctx.sessionId !== undefined && this.getContext?.()?.sessionId !== ctx.sessionId) return;
     this.lastLightSent = performance.now();
     this.plansSinceLight = 0;
     if (light) {
+      this.lightMonitor.accept(exposure, performance.now());
       // 結論沒變就不要洗版，只有變化時才印
       const sig = `${light.verdict}|${light.source}|${light.fill_from}`;
       if (sig !== this._lightSig) {
@@ -348,6 +421,8 @@ export class RemotePlanner {
       }
       this.lastLight = light;
       this.on.onLight?.(light);
+    } else {
+      this.lightMonitor.fail(performance.now());
     }
   }
 

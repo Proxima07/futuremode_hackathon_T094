@@ -118,12 +118,25 @@ test("same direction can refresh remaining movement without changing the target"
   s.ingest(plan({advice: "杯標往左"}), 2000);
   const target = s.lockedPlan;
   const closer = plan({advice: "杯標再往左一點"});
-  assert.equal(s.ingest(closer, 3000).update, false);
-  assert.equal(s.ingest(closer, 4000).update, true);
+  assert.equal(s.ingest(closer, 2500).update, false);
+  assert.equal(s.ingest(closer, 3000).update, true);
   assert.equal(s.lastAction, "move_left");
   assert.equal(s.lockedPlan, target);
   assert.equal(s.ingest(ready(), 5000).kind, "ready_pending");
   assert.equal(s.ingest(ready(), 6000).kind, "ready");
+});
+
+test("motion invalidates previous alignment votes but preserves locked target and session", () => {
+  const s = lock();
+  const target = s.lockedPlan, session = s.sessionId;
+  s.ingest(ready());
+  s.deferObservation();
+  assert.equal(s.lockedPlan, target);
+  assert.equal(s.sessionId, session);
+  assert.equal(s.ingest(ready()).kind, "ready_pending");
+  assert.equal(s.ingest(ready()).kind, "ready");
+  s.deferObservation();
+  assert.equal(s.phase, "guiding");
 });
 
 test("expired READY review evidence cannot be combined after a long interruption", () => {

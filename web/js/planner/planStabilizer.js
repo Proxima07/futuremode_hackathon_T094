@@ -25,7 +25,7 @@ const DEFAULTS = Object.freeze({
   lostConfirmations: 2,
   guidanceConfirmations: 2,
   evidenceMaxAgeMs: 10000,
-  adviceRefreshMs: 2000,
+  adviceRefreshMs: 1000,
 });
 
 const ACTIONS = new Set([
@@ -134,6 +134,20 @@ export class PlanStabilizer {
     this._clearPending();
     this._lastEvidenceAt = 0;
     return this.snapshot;
+  }
+
+  /** 畫面已移動：撤銷對準證據，但不換目標、不中止正在取得的新分析。 */
+  deferObservation() {
+    if (this._phase === PLAN_PHASE.READY) this._phase = PLAN_PHASE.GUIDING;
+    this._readyHistory = [];
+    this._lostStreak = 0;
+    this._reviewMisses = 0;
+    this._lastEvidenceAt = 0;
+    this._clearPending();
+    if (this._phase === PLAN_PHASE.SEARCHING) {
+      this._candidates.clear();
+      this._sampleCount = 0;
+    }
   }
 
   ingest(plan, now = Date.now()) {

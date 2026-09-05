@@ -34,11 +34,11 @@ function app() {
     hint = new HintBar(el.hint);
     badge = new LayoutBadge(el.badge, layoutsFor(state.intent), onManualPick);
     overlay = { clear() {}, draw(layout, opts) { this.latest = { layout, opts }; } };
-    planner = { planPaused: false, invalidate() { this.planPaused = false; },
+    planner = { planPaused: false, invalidate() { this.planPaused = false; }, resetLighting() {},
       setPlanPaused(value) { this.planPaused = value; } };
     globalThis.harness = { state, el, stabilizer, badge, planner, overlay,
       onPlan, onCustom, onLight, getPlanContext, startAnalysis, resumeForView,
-      onIntentChange, onManualPick, updateAnalysisStatus };
+      onIntentChange, onManualPick, updateAnalysisStatus, onPlanDeferred };
   `, sandbox);
   return sandbox.harness;
 }
@@ -73,7 +73,7 @@ test("actual UI announces ready, marks shutter, freezes light advice and keeps s
   assert.equal(a.overlay.latest.opts.aligned.main, true);
   a.onLight({verdict: "stylish", tip: "再往低一點拍"});
   assert.doesNotMatch(a.el.light.textContent, /往低/);
-  assert.equal(a.state.light, null);
+  assert.equal(a.state.light.verdict, "stylish");
 });
 
 test("view change only rechecks target; reanalysis unlocks and clears subjects", () => {
@@ -137,10 +137,56 @@ test("activity distinguishes scanning from a real model response or failure", ()
   assert.match(a.el.analysis.textContent, /等待首次判斷/);
   a.updateAnalysisStatus({...activity, activeKind: "plan", outcome: "analyzing"});
   assert.match(a.el.analysis.textContent, /正在判斷/);
-  a.updateAnalysisStatus({...activity, outcome: "updated", lastPlanResultAt: performance.now()});
-  assert.match(a.el.analysis.textContent, /最近判斷/);
+  a.updateAnalysisStatus({...activity, outcome: "updated", lastPlanResponseAt: performance.now()});
+  assert.match(a.el.analysis.textContent, /回覆/);
   a.updateAnalysisStatus({...activity, outcome: "error"});
   assert.match(a.el.analysis.textContent, /暫無回應/);
-  a.updateAnalysisStatus({...activity, outcome: "stale"});
-  assert.match(a.el.analysis.textContent, /畫面已改變/);
+  a.updateAnalysisStatus({...activity, outcome: "moving", viewPending: true});
+  assert.match(a.el.analysis.textContent, /確認新位置/);
+});
+
+test("new response time does not pretend that a stale frame has been applied", () => {
+  const a = app(); lock(a);
+  a.updateAnalysisStatus({running: true, outcome: "moving", viewPending: true,
+    activeKind: "plan", lastPlanResponseAt: performance.now(), lastPlanResultAt: performance.now() - 10000});
+  assert.match(a.el.analysis.textContent, /確認新位置/);
+  assert.doesNotMatch(a.el.analysis.textContent, /10\.0 秒前/);
+  a.onPlanDeferred({reason: "moving"});
+  assert.match(a.el.hint.textContent, /位置已改變/);
+  assert.doesNotMatch(a.el.hint.textContent, /往左/);
+});
+
+test("motion clears ready and old instructions immediately, without unlocking geometry", () => {
+  const a = app(); lock(a);
+  a.onPlan(ready()); a.onPlan(ready());
+  const geometry = JSON.stringify(a.state.layout), session = a.stabilizer.sessionId;
+  a.onPlanDeferred({reason: "moving"});
+  assert.equal(a.stabilizer.phase, "guiding");
+  assert.equal(a.el.shutter.dataset.ready, "false");
+  assert.equal(a.stabilizer.sessionId, session);
+  assert.equal(JSON.stringify(a.state.layout), geometry);
+  a.onPlan(ready());
+  assert.equal(a.stabilizer.phase, "guiding");
+  a.onPlan(ready());
+  assert.equal(a.stabilizer.phase, "ready");
+});
+
+test("HTTP 200 fallback is shown as unfinished analysis, not a new valid judgment", () => {
+  const a = app();
+  a.updateAnalysisStatus({running: true, outcome: "error", lastPlanResponseAt: performance.now(), responseMeta: {fallback: true}});
+  assert.match(a.el.analysis.textContent, /分析未完成/);
+});
+
+test("waiting for a changed direction never brings back the old movement instruction", () => {
+  const a = app(); lock(a);
+  const geometry = JSON.stringify(a.state.layout);
+  a.onPlanDeferred({reason: "moving"});
+  const correction = plan({action: "move_right", advice: "再往右一點"});
+  a.onPlan(correction);
+  assert.equal(a.state.progress, "guidance_pending");
+  assert.match(a.el.hint.textContent, /先保持目前位置/);
+  assert.doesNotMatch(a.el.hint.textContent, /往左/);
+  a.onPlan(correction);
+  assert.equal(a.el.hint.textContent, "再往右一點");
+  assert.equal(JSON.stringify(a.state.layout), geometry);
 });
