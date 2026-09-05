@@ -93,6 +93,9 @@ SnapFit 反過來做：**在按下快門之前，直接在畫面上畫出東西�
       國網中心 gemma-4-26B-A4B-it
         └─ 失敗 → GMI Cloud → OpenAI → 回傳 fallback（畫面維持現狀）
 ```
+### 部屬方案
+配置在樹梅派上，該樹梅派裝有中華電信家用網路實體連線。
+透過 Cloudflare tunnel 進行流量轉接，並將網域所有權保持在Cloudflare上，添加CNAME的紀錄 已進行流量轉址。
 
 ### 各層怎麼協作
 
