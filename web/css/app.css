@@ -1,0 +1,218 @@
+/* SnapFit — 手機直式優先 */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  background: #0b0b0d;
+  color: #f2f2f4;
+  font-family: system-ui, -apple-system, "Noto Sans TC", sans-serif;
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#app {
+  position: relative;
+  width: 100vw;
+  height: 100dvh;      /* dvh 才能避開 iOS 網址列造成的高度跳動 */
+  overflow: hidden;
+}
+
+#camera {
+  width: 100%; height: 100%;
+  object-fit: cover;   /* 填滿畫面。疊層的座標計算依賴這個 */
+  display: block;
+  background: #000;
+  /* 提升成獨立的合成圖層，減少與上層元素互相影響 */
+  transform: translateZ(0);
+}
+
+#overlay {
+  position: absolute;
+  inset: 0;
+  /* ────────────────────────────────────────────────
+     這兩行絕對不能省。
+
+     <canvas> 是「替換元素」。絕對定位的替換元素如果沒有
+     明確的 width/height，會使用自己的「內在尺寸」
+     （也就是點陣的寬高），不會被 inset: 0 撐開。
+
+     少了這兩行會變成：
+       畫布預設 300x150
+       → 程式讀到 300x150，把點陣設成 300*dpr
+       → 點陣變了，內在尺寸跟著變，CSS 尺寸也變
+       → ResizeObserver 觸發，再量一次
+       → 600*dpr → 1200*dpr → 2400*dpr → ...
+
+     指數成長直到顯示卡記憶體被吃光，合成器死掉，
+     整個畫面變白，而且不會有任何 JavaScript 錯誤。
+     ──────────────────────────────────────────────── */
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* ── 左上：情境與鏡頭 ────────────────────────── */
+.topbar {
+  position: absolute;
+  top: max(14px, env(safe-area-inset-top));
+  left: 14px;
+  display: flex; gap: 8px;
+}
+.chip {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 13px;
+  border-radius: 999px;
+  background: rgba(20, 20, 24, .82);
+  font-size: 14px;
+  cursor: pointer;
+  user-select: none;
+}
+.chip.hidden { display: none; }
+.chip .ico { font-size: 15px; }
+.chip .name { font-weight: 600; }
+
+/* ── 光線提示。獨立一條，因為它和構圖是兩件事 ────── */
+#lightBar {
+  position: absolute;
+  left: 50%; bottom: 176px;
+  transform: translateX(-50%);
+  max-width: 86%;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 14px; font-weight: 600;
+  text-align: center;
+  pointer-events: none;
+  transition: background .3s, color .3s;
+}
+#lightBar.hidden { display: none; }
+
+/* 三種狀態用顏色分級。光線正常時也要顯示，
+   否則在光線良好的房間裡這個功能從頭到尾看不到，像壞掉。 */
+#lightBar[data-level="idle"] {
+  background: rgba(20, 20, 24, .8); color: #8b8b99; font-weight: 500;
+}
+#lightBar[data-level="good"] {
+  background: rgba(20, 20, 24, .82); color: #cfcfda; font-weight: 500;
+}
+/* 風格。不是警告，所以用帶感的紫色而不是黃色，
+   讓使用者覺得系統「懂」他在什麼場合，而不是在挑毛病。 */
+#lightBar[data-level="style"] {
+  background: rgba(167, 139, 250, .94); color: #16062e;
+}
+#lightBar[data-level="warn"] {
+  background: rgba(251, 191, 36, .94); color: #1a1400;
+}
+#lightBar[data-level="bad"] {
+  background: rgba(248, 113, 113, .96); color: #2a0000;
+}
+
+/* ── 版型標籤（可點擊切換） ───────────────────── */
+.badge {
+  position: absolute;
+  top: max(14px, env(safe-area-inset-top));
+  right: 14px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  /* 不要用 backdrop-filter。它會強迫瀏覽器合成底下的內容，
+     疊在 <video> 上時會把影片圖層弄壞——症狀是影片變空白，
+     但其他元素照常顯示，而且不會有任何 JS 錯誤。 */
+  background: rgba(20, 20, 24, .82);
+  font-size: 14px;
+  cursor: pointer;
+  user-select: none;
+}
+.badge .name { font-weight: 600; }
+.badge .tag {
+  font-size: 11px; opacity: .65;
+  padding: 2px 7px; border-radius: 999px;
+  background: rgba(255, 255, 255, .14);
+}
+
+/* ── 提示條 ────────────────────────────────── */
+#hint {
+  position: absolute;
+  left: 50%; bottom: 132px;
+  transform: translateX(-50%);
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: rgba(20, 20, 24, .84);
+  font-size: 16px;
+  white-space: nowrap;
+  transition: opacity .22s;
+  pointer-events: none;
+}
+#hint[data-tone="good"] { color: #4ade80; }
+#hint[data-tone="warn"] { color: #fbbf24; }
+
+/* ── 快門 ─────────────────────────────────── */
+#shutter {
+  position: absolute;
+  left: 50%; bottom: max(38px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  width: 74px; height: 74px;
+  border-radius: 50%;
+  border: 4px solid rgba(255, 255, 255, .92);
+  background: #fff;
+  transition: opacity .2s, transform .1s;
+}
+#shutter:disabled { opacity: .3; }
+#shutter:active:not(:disabled) { transform: translateX(-50%) scale(.92); }
+
+/* ── 啟動畫面 ──────────────────────────────── */
+#startScreen {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 26px;
+  padding: 32px;
+  background: #0b0b0d;
+  text-align: center;
+  transition: opacity .3s;
+}
+#startScreen.hidden { opacity: 0; pointer-events: none; }
+
+.intro h1 { font-size: 34px; letter-spacing: .02em; margin-bottom: 12px; }
+.intro p  { font-size: 15px; line-height: 1.8; color: #9a9aa6; }
+.intro .modes { margin-top: 14px; font-size: 14px; color: #6f6f7c; }
+
+#startBtn {
+  padding: 15px 40px;
+  border: none; border-radius: 999px;
+  background: #f2f2f4; color: #0b0b0d;
+  font-size: 16px; font-weight: 600;
+  cursor: pointer;
+}
+#startBtn:disabled { opacity: .5; }
+
+#errorBox {
+  max-width: 320px;
+  padding: 13px 16px;
+  border-radius: 10px;
+  background: rgba(248, 113, 113, .12);
+  border: 1px solid rgba(248, 113, 113, .35);
+  color: #fca5a5;
+  font-size: 14px; line-height: 1.65;
+}
+#errorBox.hidden { display: none; }
+
+.devlink {
+  position: absolute; bottom: 24px;
+  color: #55555f; font-size: 13px; text-decoration: none;
+}
+
+/* ── 除錯面板（按 D 切換） ──────────────────── */
+#debug {
+  position: absolute;
+  left: 12px;
+  top: max(14px, env(safe-area-inset-top));
+  max-width: 62%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, .72);
+  color: #7ee2a8;
+  font: 11px/1.6 ui-monospace, "SF Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  pointer-events: none;
+}
+#debug.hidden { display: none; }

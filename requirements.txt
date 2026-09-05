@@ -1,0 +1,16 @@
+# --- 核心 ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+python-dotenv==1.0.1
+
+# --- 呼叫 VLM（國網為 OpenAI 相容端點，共用同一個 SDK） ---
+openai==1.59.6
+httpx==0.28.1
+
+# --- 影像處理（送給 VLM 前壓縮） ---
+pillow==11.1.0
+
+# --- 開發輔助 ---
+python-multipart==0.0.20
+qrcode

@@ -1,0 +1,349 @@
+/**
+ * 疊層畫布。整個產品最重要的視覺元件。
+ *
+ * ────────────────────────────────────────────────
+ * 這一版的兩個修正
+ *
+ * 1. 尺寸用 ResizeObserver 持續校正。
+ *    原本只在建構時量一次 getBoundingClientRect，
+ *    如果當下版面還沒穩定（字體載入、網址列收合、
+ *    startScreen 的淡出動畫），量到的尺寸就是錯的，
+ *    框的位置會整個偏掉。
+ *
+ * 2. 加了暗化遮罩。
+ *    框以外的區域壓暗，框內維持原樣。
+ *    這是取景器的標準做法，視覺上框會非常明顯，
+ *    使用者的注意力自然被導向該放東西的地方。
+ * ────────────────────────────────────────────────
+ */
+
+import { COLORS, CONFIG } from "../lib/config.js";
+import { toPixels, center } from "../lib/geometry.js";
+
+/** 框外的暗化程度。0 = 不暗化，1 = 全黑。可在 config.js 調整 */
+const MASK_ALPHA = CONFIG.MASK_ALPHA;
+
+/** 畫布單邊的上限。超過就是出事了，見 _resize 的說明 */
+const MAX_EDGE = 4096;
+
+export class OverlayCanvas {
+  /**
+   * @param {HTMLCanvasElement} canvas
+   * @param {() => void} [onResize] 尺寸改變時呼叫，讓上層重畫
+   */
+  constructor(canvas, onResize) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.w = 0;
+    this.h = 0;
+    this.dpr = window.devicePixelRatio || 1;
+    this.onResize = onResize ?? null;
+    this.drawCount = 0;
+    /** 遮罩強度。設成 0 就是完全透明的疊層，只剩框線 */
+    this.maskAlpha = MASK_ALPHA;
+    this.resizeCount = 0;
+    /** 偵測到尺寸失控時設為 true，除錯面板會顯示 */
+    this.runaway = false;
+
+    this._resize();
+
+    // 持續校正尺寸。這是修正框位置跑掉的關鍵。
+    if (window.ResizeObserver) {
+      this._ro = new ResizeObserver(() => this._resize());
+      // 觀察父容器。觀察畫布自己會因為點陣尺寸變動而重複觸發。
+      this._ro.observe(canvas.parentElement ?? canvas);
+    }
+    window.addEventListener("orientationchange", () =>
+      setTimeout(() => this._resize(), 250)
+    );
+    // 保險：版面穩定後再量一次
+    setTimeout(() => this._resize(), 300);
+  }
+
+  /**
+   * ────────────────────────────────────────────────
+   * 量的是「父容器」，不是畫布自己。這是關鍵。
+   *
+   * <canvas> 是替換元素，改變它的點陣尺寸會連帶改變
+   * 它的版面尺寸。如果拿畫布自己的 getBoundingClientRect()
+   * 當依據，就會變成：
+   *
+   *   量到 300x150 → 設點陣 600x300 → 版面變 600x300
+   *   → ResizeObserver 觸發 → 量到 600x300 → 設 1200x600 → ...
+   *
+   * 指數成長直到顯示卡記憶體耗盡，畫面全白。
+   *
+   * 父容器的尺寸不會被畫布影響，所以迴圈從源頭就不存在，
+   * 而且完全不依賴 CSS 有沒有寫對。
+   * ────────────────────────────────────────────────
+   */
+  _resize() {
+    const host = this.canvas.parentElement ?? this.canvas;
+    const rect = host.getBoundingClientRect();
+    const w = Math.round(rect.width);
+    const h = Math.round(rect.height);
+    if (!w || !h) return;
+    if (w === this.w && h === this.h) return;
+
+    // ── 失控成長的保險絲 ──────────────────────────
+    // 正常情況不會觸發。會觸發代表 CSS 少了
+    // #overlay { width:100%; height:100% }，
+    // 導致畫布的點陣尺寸回過頭改變它自己的版面尺寸，
+    // 形成指數成長，最後把顯示卡記憶體吃光、畫面全白。
+    if (w > MAX_EDGE || h > MAX_EDGE) {
+      console.error(
+        `畫布尺寸異常 ${w}x${h}，已停止調整。` +
+        "請檢查 CSS 是否漏掉 #overlay 的 width/height。"
+      );
+      this.runaway = true;
+      return;
+    }
+    this.resizeCount++;
+    if (this.resizeCount > 40) {
+      console.error("畫布尺寸調整次數異常，已停止以避免拖垮瀏覽器。");
+      this.runaway = true;
+      return;
+    }
+
+    this.w = w;
+    this.h = h;
+    this.dpr = window.devicePixelRatio || 1;
+
+    // 點陣尺寸：實際像素，畫出來才不會糊
+    this.canvas.width = Math.round(w * this.dpr);
+    this.canvas.height = Math.round(h * this.dpr);
+
+    // 版面尺寸：明確寫死，不要讓它跟著點陣尺寸跑。
+    // 就算 CSS 漏了 width/height，這裡也會補上。
+    this.canvas.style.width = `${w}px`;
+    this.canvas.style.height = `${h}px`;
+
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+
+    // 尺寸變了，畫布內容會被清空，必須重畫
+    this.onResize?.();
+  }
+
+  clear() {
+    this.ctx.clearRect(0, 0, this.w, this.h);
+  }
+
+  /**
+   * 畫出整個版型。
+   *
+   * @param {Object} layout
+   * @param {Object} [opts]
+   * @param {Object<string,string>} [opts.items]    slot id → 物品名稱（VLM 給的）
+   * @param {Object<string,boolean>} [opts.aligned] slot id → 是否已對齊
+   * @param {Object<string,{dx:number,dy:number}>} [opts.arrows]
+   * @param {boolean} [opts.mask]  是否畫暗化遮罩，預設 true
+   */
+  draw(layout, opts = {}) {
+    const { items = {}, aligned = {}, arrows = {}, mask = true } = opts;
+    if (!this.w || !this.h) this._resize();
+    if (!this.w || !this.h) return;
+
+    this.clear();
+    this.drawCount++;
+
+    // depth 小的先畫，才會被前面的疊在上面
+    const ordered = [...layout.slots].sort((a, b) => a.depth - b.depth);
+
+    // 沒東西可放的 optional 位置不挖洞，避免畫面破碎
+    const holes = ordered.filter((s) => !s.optional || items[s.id]);
+    if (mask) this._drawMask(holes.length ? holes : ordered);
+
+    for (const slot of ordered) {
+      const item = items[slot.id] ?? null;
+      this._drawSlot(slot, {
+        item,
+        isEmpty: !item,
+        isAligned: !!aligned[slot.id],
+      });
+
+      const arrow = arrows[slot.id];
+      if (arrow && !aligned[slot.id]) this._drawArrow(slot, arrow);
+    }
+  }
+
+  /**
+   * 框以外的區域壓暗，讓框非常明顯。
+   *
+   * ────────────────────────────────────────────────
+   * 用「單一路徑 + even-odd 填充規則」一次畫完。
+   *
+   * 原本的做法是先填滿整張畫布，再用
+   * globalCompositeOperation = "destination-out" 把框挖掉。
+   * 那樣要切換合成模式、而且是兩次全畫布的操作，
+   * 成本高，也比較容易干擾底下影片的合成圖層。
+   *
+   * even-odd 的原理：外框走一圈、每個洞各走一圈，
+   * 被奇數個路徑包住的區域才填色。
+   * 洞在外框裡面（被 2 個路徑包住，偶數），所以不填，
+   * 自然就透出底下的相機畫面。
+   *
+   * 一次 fill()，不切換任何模式。
+   * ────────────────────────────────────────────────
+   */
+  _drawMask(slots) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.beginPath();
+
+    // 外框：整張畫布
+    ctx.rect(0, 0, this.w, this.h);
+
+    // 每個目標框各是一個子路徑，會變成洞
+    for (const slot of slots) {
+      const { x, y, w, h } = toPixels(slot.box, this.w, this.h);
+      this._roundRectPath(x, y, w, h, Math.min(14, w * 0.08, h * 0.08));
+    }
+
+    ctx.fillStyle = `rgba(0,0,0,${this.maskAlpha})`;
+    ctx.fill("evenodd");
+    ctx.restore();
+  }
+
+  _drawSlot(slot, { item, isEmpty, isAligned }) {
+    const ctx = this.ctx;
+    const { x, y, w, h } = toPixels(slot.box, this.w, this.h);
+    const color = isAligned ? COLORS.aligned : COLORS[slot.prefer] ?? COLORS.any;
+    const r = Math.min(14, w * 0.08, h * 0.08);
+
+    ctx.save();
+
+    ctx.setLineDash(isEmpty ? [8, 7] : []);
+    ctx.lineWidth = isAligned ? 5 : isEmpty ? 2.5 : 4;
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = isEmpty ? 0.55 : 1;
+    ctx.shadowColor = "rgba(0,0,0,.55)";
+    ctx.shadowBlur = 6;
+    this._roundRect(x, y, w, h, r);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    if (isAligned) {
+      ctx.globalAlpha = 0.2;
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // 四個角加粗，視覺上更像取景框
+    if (!isEmpty) {
+      ctx.setLineDash([]);
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = color;
+      this._corners(x, y, w, h, Math.min(24, w * 0.24, h * 0.24));
+    }
+
+    ctx.restore();
+
+    // 標籤。優先顯示 VLM 給的物品名稱，沒有才用版型的預設說明
+    const text = item ?? slot.label;
+    if (text) this._label(text, x, y, w, h, color, isEmpty);
+  }
+
+  /**
+   * 標籤。靠近畫面上緣時改畫在框內，避免被切掉。
+   * 這是原本標籤看起來被切掉的原因。
+   */
+  _label(text, x, y, w, h, color, dim) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.font = "600 14px system-ui, 'Noto Sans TC', sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    const padX = 10;
+    const boxW = ctx.measureText(text).width + padX * 2;
+    const boxH = 25;
+    const cx = x + w / 2;
+
+    // 預設畫在框上方；空間不夠就改畫在框內上緣
+    let cy = y - boxH / 2 - 6;
+    if (cy - boxH / 2 < 4) cy = y + boxH / 2 + 8;
+
+    ctx.globalAlpha = dim ? 0.6 : 1;
+    ctx.fillStyle = "rgba(0,0,0,.72)";
+    this._roundRect(cx - boxW / 2, cy - boxH / 2, boxW, boxH, 12);
+    ctx.fill();
+
+    ctx.fillStyle = color;
+    ctx.fillText(text, cx, cy + 0.5);
+    ctx.restore();
+  }
+
+  _drawArrow(slot, { dx, dy }) {
+    const ctx = this.ctx;
+    const [ncx, ncy] = center(slot.box);
+    const px = ncx * this.w;
+    const py = ncy * this.h;
+
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-4) return;
+    // dx/dy 是物件相對目標的偏移，箭頭要指向相反方向
+    const ux = -dx / len;
+    const uy = -dy / len;
+    const L = Math.min(64, this.w * 0.14);
+
+    ctx.save();
+    ctx.strokeStyle = "#fff";
+    ctx.fillStyle = "#fff";
+    ctx.lineWidth = 4;
+    ctx.lineCap = "round";
+    ctx.shadowColor = "rgba(0,0,0,.6)";
+    ctx.shadowBlur = 6;
+
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.lineTo(px + ux * L, py + uy * L);
+    ctx.stroke();
+
+    const hx = px + ux * L;
+    const hy = py + uy * L;
+    const a = Math.atan2(uy, ux);
+    const s = 13;
+    ctx.beginPath();
+    ctx.moveTo(hx, hy);
+    ctx.lineTo(hx - s * Math.cos(a - 0.42), hy - s * Math.sin(a - 0.42));
+    ctx.lineTo(hx - s * Math.cos(a + 0.42), hy - s * Math.sin(a + 0.42));
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** 開一條新路徑並畫圓角矩形 */
+  _roundRect(x, y, w, h, r) {
+    this.ctx.beginPath();
+    this._roundRectPath(x, y, w, h, r);
+  }
+
+  /** 把圓角矩形「附加」到目前的路徑上，不會清掉既有路徑 */
+  _roundRectPath(x, y, w, h, r) {
+    const ctx = this.ctx;
+    const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
+  _corners(x, y, w, h, c) {
+    const ctx = this.ctx;
+    for (const pts of [
+      [[x, y + c], [x, y], [x + c, y]],
+      [[x + w - c, y], [x + w, y], [x + w, y + c]],
+      [[x + w, y + h - c], [x + w, y + h], [x + w - c, y + h]],
+      [[x + c, y + h], [x, y + h], [x, y + h - c]],
+    ]) {
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      ctx.lineTo(pts[1][0], pts[1][1]);
+      ctx.lineTo(pts[2][0], pts[2][1]);
+      ctx.stroke();
+    }
+  }
+}

@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SnapFit — 版型預覽</title>
+<style>
+  :root {
+    --bg: #0f0f12;
+    --panel: #17171c;
+    --line: #2a2a33;
+    --text: #ececf1;
+    --dim: #8b8b99;
+    --hero: #4ade80;
+    --tall: #60a5fa;
+    --short: #fbbf24;
+    --any: #a78bfa;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 15px/1.6 system-ui, -apple-system, "Noto Sans TC", sans-serif;
+    padding: 28px 20px 80px;
+  }
+  h1 { font-size: 21px; margin-bottom: 6px; }
+  .sub { color: var(--dim); font-size: 14px; margin-bottom: 26px; }
+
+  .grid {
+    display: grid; gap: 20px;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    margin-bottom: 36px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 16px;
+  }
+  .card h2 { font-size: 16px; margin-bottom: 2px; }
+  .card .hint { color: var(--dim); font-size: 13px; margin-bottom: 12px; }
+
+  .stage {
+    position: relative; width: 100%; aspect-ratio: 3/4;
+    background: #202027;
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 33.33% 33.33%;
+    border-radius: 8px; overflow: hidden;
+  }
+  .slot {
+    position: absolute; border: 2px solid; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; text-align: center; padding: 4px;
+    background: currentColor;
+  }
+  .slot span { color: var(--text); font-weight: 600; }
+  .slot.hero  { color: color-mix(in srgb, var(--hero) 16%, transparent);
+                border-color: var(--hero); }
+  .slot.tall_or_large  { color: color-mix(in srgb, var(--tall) 16%, transparent);
+                border-color: var(--tall); }
+  .slot.short_or_small { color: color-mix(in srgb, var(--short) 16%, transparent);
+                border-color: var(--short); }
+  .slot.any   { color: color-mix(in srgb, var(--any) 16%, transparent);
+                border-color: var(--any); }
+  .slot.optional { border-style: dashed; }
+
+  .legend { display: flex; gap: 16px; flex-wrap: wrap;
+            font-size: 13px; color: var(--dim); margin-bottom: 22px; }
+  .legend i { display: inline-block; width: 11px; height: 11px;
+              border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+
+  .sim { background: var(--panel); border: 1px solid var(--line);
+         border-radius: 12px; padding: 20px; }
+  .sim h2 { font-size: 17px; margin-bottom: 4px; }
+  .sim .hint { color: var(--dim); font-size: 13px; margin-bottom: 16px; }
+  .sim-body { display: grid; gap: 20px; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 640px) { .sim-body { grid-template-columns: 1fr; } }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 500; }
+  input[type=number] { width: 62px; background: #202027; color: var(--text);
+    border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; }
+  input[type=text] { width: 84px; background: #202027; color: var(--text);
+    border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; }
+  button { background: #2a2a33; color: var(--text); border: 1px solid var(--line);
+    border-radius: 7px; padding: 7px 13px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #34343f; }
+  .row-actions { display: flex; gap: 8px; margin: 12px 0 4px; }
+  pre { background: #202027; border-radius: 8px; padding: 12px;
+        font-size: 12px; overflow-x: auto; line-height: 1.55; }
+  .removed { color: #f87171; }
+  .warn { color: var(--short); font-size: 13px; margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<h1>版型預覽</h1>
+<p class="sub">
+  直接看四個版型的座標長什麼樣，並測試規則指派的結果。<br>
+  改了 <code>definitions/*.js</code> 之後重整這頁就會更新，不用等相機那條線做完。
+</p>
+
+<div class="legend">
+  <span><i style="background:var(--hero)"></i>主角 hero</span>
+  <span><i style="background:var(--tall)"></i>高的放後面 tall</span>
+  <span><i style="background:var(--short)"></i>矮的放前面 short</span>
+  <span><i style="background:var(--any)"></i>無偏好 any</span>
+  <span>虛線框 = 可空著（optional）</span>
+</div>
+
+<div class="grid" id="grid"></div>
+
+<div class="sim">
+  <h2>指派模擬器</h2>
+  <p class="hint">
+    改物件的高度與面積，看規則會怎麼指派。
+    重點確認：<strong>面積最大的要進 hero，高的要進 depth 小的位置。</strong>
+  </p>
+  <div class="sim-body">
+    <div>
+      <table>
+        <thead><tr><th>id</th><th>名稱</th><th>高度</th><th>面積</th></tr></thead>
+        <tbody id="objs"></tbody>
+      </table>
+      <div class="row-actions">
+        <button onclick="addObj()">＋ 加物件</button>
+        <button onclick="delObj()">－ 減物件</button>
+      </div>
+    </div>
+    <div>
+      <pre id="out">—</pre>
+      <div class="stage" id="simStage" style="margin-top:14px"></div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { ALL, getLayout } from "./js/layouts/index.js";
+import { planByRule } from "./js/layouts/assign.js";
+import { validateLayout } from "./js/layouts/schema.js";
+
+// ── 畫版型 ────────────────────────────────────────
+function drawSlots(stage, layout, assignMap = null) {
+  stage.innerHTML = "";
+  // depth 小的先畫，才會被後面的疊在上面
+  const ordered = [...layout.slots].sort((a, b) => a.depth - b.depth);
+  for (const s of ordered) {
+    const [x1, y1, x2, y2] = s.box;
+    const el = document.createElement("div");
+    el.className = `slot ${s.prefer}` + (s.optional ? " optional" : "");
+    el.style.left   = x1 * 100 + "%";
+    el.style.top    = y1 * 100 + "%";
+    el.style.width  = (x2 - x1) * 100 + "%";
+    el.style.height = (y2 - y1) * 100 + "%";
+    const who = assignMap ? assignMap[s.id] : null;
+    el.innerHTML = `<span>${s.id}${who ? "<br>← " + who : ""}</span>`;
+    stage.appendChild(el);
+  }
+}
+
+const grid = document.getElementById("grid");
+for (const layout of ALL) {
+  const problems = validateLayout(layout);
+  const card = document.createElement("div");
+  card.className = "card";
+  card.innerHTML = `
+    <h2>${layout.name} <span style="color:var(--dim);font-weight:400">
+      ${layout.id}</span></h2>
+    <p class="hint">${layout.hint} · 容納 ${layout.minObjects}–${layout.maxObjects} 個物件</p>
+    <div class="stage"></div>
+    ${problems.length ? `<p class="warn">⚠ ${problems.join("<br>⚠ ")}</p>` : ""}
+  `;
+  grid.appendChild(card);
+  drawSlots(card.querySelector(".stage"), layout);
+}
+
+// ── 模擬器 ────────────────────────────────────────
+let objs = [
+  { id: "d1", label: "bottle", h_ratio: 0.51, area: 0.07 },
+  { id: "d2", label: "book",   h_ratio: 0.14, area: 0.04 },
+  { id: "d3", label: "cable",  h_ratio: 0.05, area: 0.004 },
+];
+
+const tbody = document.getElementById("objs");
+const out = document.getElementById("out");
+const simStage = document.getElementById("simStage");
+
+function render() {
+  tbody.innerHTML = "";
+  objs.forEach((o, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${o.id}</td>
+      <td><input type="text" value="${o.label}" data-i="${i}" data-k="label"></td>
+      <td><input type="number" step="0.01" min="0" max="1"
+                 value="${o.h_ratio}" data-i="${i}" data-k="h_ratio"></td>
+      <td><input type="number" step="0.005" min="0" max="1"
+                 value="${o.area}" data-i="${i}" data-k="area"></td>`;
+    tbody.appendChild(tr);
+  });
+  tbody.oninput = (e) => {
+    const { i, k } = e.target.dataset;
+    objs[i][k] = k === "label" ? e.target.value : parseFloat(e.target.value) || 0;
+    compute();
+  };
+  compute();
+}
+
+function compute() {
+  const dets = objs.map((o) => ({ ...o, box: [0, 0, 0.1, 0.1] }));
+  const plan = planByRule(dets, ALL);
+  const layout = getLayout(plan.layout);
+
+  const nameOf = (id) => {
+    const o = objs.find((x) => x.id === id);
+    return o ? `${id} (${o.label})` : id;
+  };
+
+  let txt = `版型：${layout.name}  [${plan.layout}]\n\n指派：\n`;
+  for (const s of [...layout.slots].sort((a, b) => a.depth - b.depth)) {
+    const v = plan.assign[s.id];
+    txt += `  ${s.id.padEnd(7)} depth:${s.depth}  ← ${v ? nameOf(v) : "（空）"}\n`;
+  }
+  txt += `\n建議移除：${plan.remove.length
+    ? plan.remove.map(nameOf).join(", ") : "無"}`;
+
+  out.textContent = txt;
+  drawSlots(simStage, layout, plan.assign);
+}
+
+window.addObj = () => {
+  const n = objs.length + 1;
+  objs.push({ id: "d" + n, label: "item", h_ratio: 0.2, area: 0.03 });
+  render();
+};
+window.delObj = () => { if (objs.length > 1) { objs.pop(); render(); } };
+
+render();
+</script>
+</body>
+</html>
