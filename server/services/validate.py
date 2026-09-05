@@ -84,6 +84,17 @@ def num(value: Any, lo: float, hi: float, default: float) -> float:
         return default
 
 
+def flag(value: Any) -> bool:
+    """容忍模型把 JSON boolean 寫成字串，避免 "false" 被 bool() 當 true。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return isinstance(value, str) and value.strip().lower() in {
+        "true", "1", "yes", "on",
+    }
+
+
 def parse_json(text: str) -> dict | None:
     if not text:
         return None
@@ -256,16 +267,14 @@ def validate_plan(raw: dict | None, allowed_layouts: set[str],
     if fit == "adjust":
         a = raw.get("adjust") or {}
         adjust = {
-            "mirror": bool(a.get("mirror")),
+            "mirror": flag(a.get("mirror")),
+            "flip_y": flag(a.get("flip_y")),
             "scale": num(a.get("scale"), 0.85, 1.20, 1.0),
             "shift_x": num(a.get("shift_x"), -0.08, 0.08, 0.0),
             "shift_y": num(a.get("shift_y"), -0.08, 0.08, 0.0),
         }
-        # 什麼都沒調就等於 good，省得前端做無謂的重畫
-        if (not adjust["mirror"] and abs(adjust["scale"] - 1) < 0.02
-                and abs(adjust["shift_x"]) < 0.01
-                and abs(adjust["shift_y"]) < 0.01):
-            fit, adjust = "good", None
+        # identity adjust 不能自動改成 good。當目前版型已翻向時，模型會用
+        # identity 明確要求回到內建基準；改成 good 反而會保留上一輪方向。
 
     # ── 物品配置 ─────────────────────────────
     if custom:

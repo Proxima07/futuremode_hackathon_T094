@@ -70,6 +70,7 @@
   }
   .guide-svg .soft { stroke: rgba(255,255,255,.38); }
   .guide-svg .gold { stroke: var(--short); stroke-width: 2; }
+  .guide-svg .axis { stroke: var(--hero); stroke-width: 2.2; }
   .guide-anchor {
     position: absolute; width: 15px; height: 15px;
     transform: translate(-50%, -50%);
@@ -81,6 +82,12 @@
     transform: translateX(-50%); white-space: nowrap;
     color: var(--text); font-size: 11px; font-weight: 600;
     background: rgba(0,0,0,.68); border-radius: 999px; padding: 2px 7px;
+  }
+  .guide-axis-label {
+    position: absolute; transform: translate(-50%, -50%);
+    color: var(--hero); font-size: 11px; font-weight: 600;
+    white-space: nowrap; background: rgba(0,0,0,.68);
+    border-radius: 999px; padding: 3px 8px;
   }
 
   .legend { display: flex; gap: 16px; flex-wrap: wrap;
@@ -187,7 +194,8 @@ function drawComposition(stage, layout) {
   } else if (type === "triangle") {
     addPath(svg, "M 50 14 L 8 80 L 92 80 Z");
   } else if (type === "diagonal") {
-    addPath(svg, "M 5 12 L 95 82");
+    addPath(svg, "M 6 12 L 94 82", "line axis");
+    addPath(svg, "M 2 17 L 10 7 M 90 87 L 98 77", "line axis");
     addPath(svg, "M 5 28 L 82 88", "line soft");
   } else if (type === "golden_spiral") {
     addPath(svg, "M 61.8 8 L 61.8 92", "line soft");
@@ -222,6 +230,18 @@ function drawSlots(stage, layout, assignMap = null) {
 
   if (layout.guideOnly) {
     for (const s of layout.slots) {
+      if (s.guide === "axis") {
+        const label = document.createElement("div");
+        label.className = "guide-axis-label";
+        label.style.left = s.anchor[0] * 100 + "%";
+        label.style.top = s.anchor[1] * 100 + "%";
+        const who = assignMap ? assignMap[s.id] : null;
+        label.textContent = who
+          ? `${who}沿左上→右下`
+          : "主體沿左上→右下";
+        stage.appendChild(label);
+        continue;
+      }
       const el = document.createElement("div");
       el.className = "guide-anchor";
       el.style.left = s.anchor[0] * 100 + "%";

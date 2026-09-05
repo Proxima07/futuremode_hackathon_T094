@@ -21,21 +21,24 @@ const SAFE = { top: 0.12, bottom: 0.76, left: 0.04, right: 0.96 };
  * 把調整參數套用到版型上。
  *
  * @param {Object} layout  原始版型
- * @param {Object|null} adjust  { mirror, scale, shift_x, shift_y }
+ * @param {Object|null} adjust  { mirror, flip_y, scale, shift_x, shift_y }
  * @returns {Object} 新的版型物件（不會改動原始的）
  */
 export function applyAdjust(layout, adjust) {
   if (!adjust) return layout;
 
-  const { mirror = false, scale = 1, shift_x = 0, shift_y = 0 } = adjust;
-  if (!mirror && Math.abs(scale - 1) < 0.02 &&
+  const {
+    mirror = false, flip_y = false,
+    scale = 1, shift_x = 0, shift_y = 0,
+  } = adjust;
+  if (!mirror && !flip_y && Math.abs(scale - 1) < 0.02 &&
       Math.abs(shift_x) < 0.01 && Math.abs(shift_y) < 0.01) {
     return layout;
   }
 
   const transformPoint = ([px, py]) => {
     let x = mirror ? 1 - px : px;
-    let y = py;
+    let y = flip_y ? 1 - py : py;
     x = 0.5 + (x - 0.5) * scale + shift_x;
     y = 0.5 + (y - 0.5) * scale + shift_y;
     return [
@@ -49,6 +52,9 @@ export function applyAdjust(layout, adjust) {
 
     if (mirror) {
       [x1, x2] = [1 - x2, 1 - x1];
+    }
+    if (flip_y) {
+      [y1, y2] = [1 - y2, 1 - y1];
     }
 
     if (scale !== 1) {
@@ -75,7 +81,7 @@ export function applyAdjust(layout, adjust) {
   const composition = layout.composition
     ? {
         ...layout.composition,
-        transform: { mirror, scale, shift_x, shift_y },
+        transform: { mirror, flip_y, scale, shift_x, shift_y },
       }
     : undefined;
 
@@ -83,6 +89,7 @@ export function applyAdjust(layout, adjust) {
     ...layout,
     slots,
     ...(composition ? { composition } : {}),
+    adjustment: { mirror, flip_y, scale, shift_x, shift_y },
     adjusted: true,
   };
 }

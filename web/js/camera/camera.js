@@ -83,20 +83,34 @@ export async function start(video, onLost, deviceId = null) {
 
   try {
     // 指定了鏡頭就用 deviceId，否則用 facingMode 讓系統挑後鏡頭。
-    // facingMode 用 "environment" 而不是 { exact: "environment" }，
+    // facingMode 用 ideal 而不是 { exact: "environment" }，
     // 因為桌機沒有後鏡頭，exact 會直接失敗，開發時很不方便。
     const videoConstraints = deviceId
       ? { deviceId: { exact: deviceId } }
-      : { facingMode: "environment" };
+      : { facingMode: { ideal: "environment" } };
 
     // Chrome 只有在 getUserMedia 階段明確請求 PTZ/Zoom 權限後，
     // 才會把 zoom 放進 track.getCapabilities()。上一版少了這一步，
     // 導致明明已經有縮放介面，卻因判定為 unsupported 而被隱藏。
     const supported = navigator.mediaDevices.getSupportedConstraints?.() ?? {};
     const zoomConstraint = supported.zoom ? { zoom: true } : {};
+    const formatConstraints = {};
+
+    // 手機瀏覽器有時會無視 width/height 的直式順序，仍回傳橫向 4:3，
+    // 接著被直式 object-fit:cover 大量裁掉，看起來就像放大 2～3 倍。
+    // aspectRatio 再明確表達一次「希望取得直式 3:4」；resizeMode:none
+    // 則要求瀏覽器優先使用鏡頭原生輸出，不要為了湊尺寸再做一次裁切放大。
+    // 兩項都是 ideal，舊瀏覽器不支援時會安全忽略。
+    if (supported.aspectRatio) {
+      formatConstraints.aspectRatio = { ideal: 3 / 4 };
+    }
+    if (supported.resizeMode) {
+      formatConstraints.resizeMode = { ideal: "none" };
+    }
 
     const baseVideoConstraints = {
       ...videoConstraints,
+      ...formatConstraints,
       // 不要求太高。送給 VLM 的只有 512px，
       // 拍照存檔用 960 也足夠，而解析度越高影像解碼越吃資源。
       width: { ideal: 960 },
@@ -109,17 +123,15 @@ export async function start(video, onLost, deviceId = null) {
         video: { ...baseVideoConstraints, ...zoomConstraint },
       });
     } catch (err) {
-      // 瀏覽器支援 zoom 不代表使用者選到的每一顆鏡頭都支援。
-      // 例如某些前鏡頭會因 zoom:true 回 OverconstrainedError；
-      // 這時退回一般相機，不能讓整個拍攝功能一起失效。
-      if (zoomConstraint.zoom && err?.name === "OverconstrainedError") {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: baseVideoConstraints,
-        });
-      } else {
-        throw err;
-      }
+      // 瀏覽器宣稱支援 zoom，不代表這顆鏡頭或本次權限允許 PTZ。
+      // zoom:true 可能回 OverconstrainedError，也可能因使用者只允許一般
+      // 相機而回 NotAllowedError。只要有帶 optional zoom，就再試一次不帶
+      // zoom 的一般相機；第二次仍失敗才交給上層顯示真正錯誤。
+      if (!zoomConstraint.zoom) throw err;
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: baseVideoConstraints,
+      });
     }
   } catch (err) {
     throw toCameraError(err);

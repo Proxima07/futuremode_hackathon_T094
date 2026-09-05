@@ -17,12 +17,17 @@ class SlotIn(BaseModel):
     box: list[float]
     prefer: str = "any"
     label: str = ""
+    anchor: list[float] | None = None
+    guide: str = ""
 
 
 class LayoutIn(BaseModel):
     """目前正在用的版型。"""
     id: str
     name: str = ""
+    guide_only: bool = False
+    composition: str = ""
+    orientation: str = ""
     slots: list[SlotIn] = []
 
 
@@ -118,6 +123,7 @@ class CustomLayout(BaseModel):
 class Adjust(BaseModel):
     """對既有版型的受約束調整。不是自由座標。"""
     mirror: bool = False
+    flip_y: bool = False
     scale: float = 1.0
     shift_x: float = 0.0
     shift_y: float = 0.0

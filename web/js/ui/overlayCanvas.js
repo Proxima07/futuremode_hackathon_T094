@@ -158,7 +158,15 @@ export class OverlayCanvas {
         // 沒有第二個物件時，不顯示「陪襯或留白」錨點。
         // 構圖線本身已經能表示留白方向，多一顆空錨點只會遮住取景畫面。
         if (slot.optional && !item) continue;
-        this._drawAnchor(slot, item, !!aligned[slot.id]);
+        if (slot.guide === "axis") {
+          this._drawAxisTarget(
+            slot, item, !!aligned[slot.id], layout.composition
+          );
+        } else {
+          this._drawAnchor(
+            slot, item, !!aligned[slot.id], layout.composition
+          );
+        }
       }
       return;
     }
@@ -204,7 +212,13 @@ export class OverlayCanvas {
       const right = [0.92, 0.80];
       this._guideLine([top, left, right, top], transform, true);
     } else if (type === "diagonal") {
-      this._guideLine([[0.05, 0.12], [0.95, 0.82]], transform, true);
+      const axis = [[0.06, 0.12], [0.94, 0.82]];
+      // 主線用 hero 綠色，並在兩端加短刻度，讓它看起來是要沿線
+      // 對齊的「軸」，而不是要把物品中心塞進某個交點。
+      ctx.strokeStyle = "rgba(74,222,128,.94)";
+      ctx.lineWidth = 2.6;
+      this._guideLine(axis, transform, true, 0.94, false);
+      this._drawAxisCaps(axis, transform);
       // 一條較淡的平行線，讓長條主體比較容易順著動線擺放。
       this._guideLine([[0.05, 0.28], [0.82, 0.88]], transform, false, 0.42);
     } else if (type === "golden_spiral") {
@@ -244,10 +258,11 @@ export class OverlayCanvas {
   /** 把正規化座標套用 LLM 的受約束調整，再轉成畫布像素。 */
   _guidePoint([px, py], transform = {}) {
     const {
-      mirror = false, scale = 1, shift_x = 0, shift_y = 0,
+      mirror = false, flip_y = false,
+      scale = 1, shift_x = 0, shift_y = 0,
     } = transform;
     let x = mirror ? 1 - px : px;
-    let y = py;
+    let y = flip_y ? 1 - py : py;
     x = 0.5 + (x - 0.5) * scale + shift_x;
     y = 0.5 + (y - 0.5) * scale + shift_y;
     return [x * this.w, y * this.h];
@@ -271,8 +286,44 @@ export class OverlayCanvas {
     ctx.stroke();
   }
 
+  /** 在對角線兩端加垂直短刻度，表示整段線都是對齊目標。 */
+  _drawAxisCaps(points, transform) {
+    const [start, end] = points.map((point) => this._guidePoint(point, transform));
+    const angle = Math.atan2(end[1] - start[1], end[0] - start[0]);
+    const nx = -Math.sin(angle);
+    const ny = Math.cos(angle);
+    const size = 10;
+    const ctx = this.ctx;
+
+    ctx.save();
+    ctx.strokeStyle = "rgba(74,222,128,.94)";
+    ctx.lineWidth = 3;
+    for (const [x, y] of [start, end]) {
+      ctx.beginPath();
+      ctx.moveTo(x - nx * size, y - ny * size);
+      ctx.lineTo(x + nx * size, y + ny * size);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /** 對角線版型顯示沿線文字，不再畫容易被誤會成定位點的十字。 */
+  _drawAxisTarget(slot, item, isAligned, composition = {}) {
+    const [nx, ny] = slot.anchor ?? center(slot.box);
+    const x = nx * this.w;
+    const y = ny * this.h;
+    const color = isAligned
+      ? COLORS.aligned
+      : COLORS[slot.prefer] ?? COLORS.any;
+    const transform = composition.transform ?? {};
+    const reversed = !!transform.mirror !== !!transform.flip_y;
+    const direction = reversed ? "右上→左下" : "左上→右下";
+    const text = item ? `${item}沿${direction}` : `主體沿${direction}`;
+    if (text) this._label(text, x - 75, y - 16, 150, 32, color, !item);
+  }
+
   /** 構圖引導版型只畫小型交點，不畫限制物件尺寸的大框。 */
-  _drawAnchor(slot, item, isAligned) {
+  _drawAnchor(slot, item, isAligned, composition = {}) {
     const [nx, ny] = slot.anchor ?? center(slot.box);
     const x = nx * this.w;
     const y = ny * this.h;
@@ -300,7 +351,11 @@ export class OverlayCanvas {
     ctx.stroke();
     ctx.restore();
 
-    const text = item ?? slot.label;
+    let text = item ?? slot.label;
+    if (["thirds", "golden_grid"].includes(composition.type)) {
+      const quadrant = `${nx < 0.5 ? "左" : "右"}${ny < 0.5 ? "上" : "下"}`;
+      text = item ? `${item}・${quadrant}交點` : `${quadrant}交點`;
+    }
     if (text) this._label(text, x - 44, y - 16, 88, 32, color, !item);
   }
 

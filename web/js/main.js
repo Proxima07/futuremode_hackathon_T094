@@ -115,9 +115,28 @@ async function onCameraReady() {
   });
   badge.setAuto(state.baseLayout.id);
 
-  // 鏡頭列舉一定要在取得權限之後，否則 label 全是空的
+  // 鏡頭列舉一定要在取得權限之後，否則 label 全是空的。
+  // 多鏡頭手機若能辨識出超廣角，或使用者之前選過另一顆鏡頭，
+  // 啟動時先切到那一顆，避免每次都從看起來放大很多的預設鏡頭開始。
+  const cameras = await devices.list();
+  const preferredCamera = devices.preferred(cameras, camera.currentDevice());
+  if (preferredCamera?.id && preferredCamera.id !== camera.currentDevice()) {
+    hint.set("正在調整到較合適的相機視野…", "info");
+    try {
+      const res = await camera.switchTo(
+        el.video, preferredCamera.id, onCameraLost
+      );
+      console.log(
+        `已選擇 ${preferredCamera.label} ${res.width}x${res.height}`
+      );
+    } catch (err) {
+      console.info("偏好鏡頭無法啟動，退回系統預設：", err);
+      await camera.start(el.video, onCameraLost);
+    }
+  }
+
   cameraPicker = new CameraPicker(el.camera, onCameraSwitch);
-  cameraPicker.setDevices(await devices.list(), camera.currentDevice());
+  cameraPicker.setDevices(cameras, camera.currentDevice());
 
   zoomControl = new ZoomControl(el.zoom, camera.setZoom);
   zoomControl.configure(camera.zoomInfo());
@@ -151,11 +170,24 @@ function getPlanContext() {
     current: {
       id: state.layout.id,
       name: state.layout.name,
+      guide_only: !!state.layout.guideOnly,
+      composition: state.layout.composition?.type ?? "",
+      orientation: guideOrientation(state.layout),
       slots: state.layout.slots.map((s) => ({
         id: s.id, box: s.box, prefer: s.prefer, label: s.label ?? "",
+        anchor: s.anchor ?? null,
+        guide: s.guide ?? "",
       })),
     },
   };
+}
+
+/** 把幾何方向翻成人與 VLM 都不會誤解的畫面方向。 */
+function guideOrientation(layout) {
+  if (layout.composition?.type !== "diagonal") return "";
+  const transform = layout.composition.transform ?? {};
+  const reversed = !!transform.mirror !== !!transform.flip_y;
+  return reversed ? "右上到左下" : "左上到右下";
 }
 
 // ── 情境與鏡頭切換 ──────────────────────────────────
@@ -185,6 +217,7 @@ async function onCameraSwitch(deviceId) {
   try {
     const res = await camera.switchTo(el.video, deviceId, onCameraLost);
     console.log(`切換完成 ${res.width}x${res.height}`);
+    devices.remember(deviceId);
     zoomControl?.configure(camera.zoomInfo());
     resetSceneMemory();
     hint.set("正在看畫面…", "info");
@@ -195,6 +228,7 @@ async function onCameraSwitch(deviceId) {
     try {
       await camera.start(el.video, onCameraLost);
       zoomControl?.configure(camera.zoomInfo());
+      cameraPicker?.setDevices(await devices.list(), camera.currentDevice());
     } catch { /* 真的救不回來就交給 onCameraLost */ }
   } finally {
     planner?.start();
@@ -229,10 +263,14 @@ function onPlan(plan) {
   // 動態版型走 /api/custom，這裡只處理內建版型與微調
   if (!badge.locked) {
     const base = plan.layout ? getLayout(plan.layout) : state.baseLayout;
+    const sameBase = base.id === state.baseLayout?.id;
     state.baseLayout = base;
-    state.layout =
-      plan.fit === "adjust" ? applyAdjust(base, plan.adjust) : base;
-    badge.setAuto(base.id, plan.fit === "adjust");
+    if (plan.fit === "adjust") {
+      state.layout = applyAdjust(base, plan.adjust);
+    } else if (!(plan.fit === "good" && sameBase && state.layout?.adjusted)) {
+      state.layout = base;
+    }
+    badge.setAuto(base.id, state.layout?.adjustment ?? false);
   }
 
   applyItems(plan.placements);
@@ -400,6 +438,15 @@ function updateDebug() {
     ? ((performance.now() - state.lastPlanAt) / 1000).toFixed(1) + "s 前"
     : "尚未取得";
   const l = state.light;
+  const visible = el.video.videoWidth
+    ? visibleRegion(el.video)
+    : null;
+  const cropFactor = visible
+    ? Math.max(
+        el.video.videoWidth / visible.sw,
+        el.video.videoHeight / visible.sh
+      )
+    : 1;
   el.debug.textContent = [
     `建置 ${CONFIG.BUILD ?? "?"} · 情境 ${state.intent.name}`,
     `畫布 ${overlay?.w}x${overlay?.h} @${overlay?.dpr}x` +
@@ -422,6 +469,8 @@ function updateDebug() {
     `  video ${el.video.videoWidth}x${el.video.videoHeight} ` +
       `ready=${camera.health.readyState} ` +
       `${camera.health.paused ? "暫停" : "播放中"}`,
+    `  畫面裁切 ${cropFactor.toFixed(2)}×` +
+      (cropFactor > 1.5 ? "（建議切換其他後鏡頭）" : ""),
     `  track ${camera.health.trackState} 異常 ${camera.health.badTicks}/3`,
   ].join("\n");
 }

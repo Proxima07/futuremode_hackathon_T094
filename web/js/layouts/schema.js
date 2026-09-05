@@ -18,6 +18,7 @@
  * @property {string} prefer   偏好放什麼物件，見 PREFER
  * @property {boolean} [optional] 可以空著不放東西
  * @property {string} [label]  給使用者看的中文說明
+ * @property {string} [guide]  "axis" 表示應沿整條線對齊，而不是對準單點
  */
 
 /**
@@ -105,6 +106,9 @@ export function validateLayout(layout) {
       if (!Array.isArray(a) || a.length !== 2 ||
           a.some((v) => typeof v !== "number" || v < 0 || v > 1)) {
         push(`${s.id} 缺少有效的 anchor [x,y]`);
+      }
+      if (s.guide !== undefined && s.guide !== "axis") {
+        push(`${s.id} 的 guide 類型不支援：${s.guide}`);
       }
     }
   }

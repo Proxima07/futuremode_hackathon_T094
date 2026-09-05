@@ -69,11 +69,11 @@ LAYOUT_GUIDE = {
     "detail": "瑕疵、材質、文字或食物細節的近距離特寫",
     "overhead": "餐點或平面物件的正上方俯拍",
     "angle45": "有高度的餐點或商品，從斜上方呈現立體感",
-    "rule_thirds": "三分法線與交點；單一主體、環境感、需要自然留白",
-    "golden_grid": "黃金分割線；質感商品、非對稱留白、安靜穩定的畫面",
-    "golden_spiral": "黃金螺旋；主體明確且周圍元素能形成彎曲視線流",
+    "rule_thirds": "三分法線與四個交點；主體可依現場位於任一交點，不限左上",
+    "golden_grid": "黃金分割線與四個交點；質感商品、非對稱留白、安靜畫面",
+    "golden_spiral": "黃金螺旋；螺旋眼可翻到四個方向配合主體與視線流",
     "triangle": "三角構圖；一個主體加一至兩個陪襯，形成穩定集中感",
-    "diagonal": "對角線構圖；長條、斜放或需要方向感與動態感的主體",
+    "diagonal": "對角線構圖；基準線為左上到右下（\\），可 mirror 成右上到左下（/）",
     "portrait_environment": "環境人像；人物靠一側，保留有故事的背景與視線空間",
     "portrait_center": "對稱人像；人物置中，利用走廊、門框或建築中軸集中視線",
 }
@@ -93,11 +93,41 @@ custom —— 內建版型都不合用（物品數量或排列完全對不上）
 
 **優先選 good 或 adjust。**
 
-adjust 的四個參數（對整組框做）：
+adjust 的五個參數（描述相對於內建基準版型的最終狀態，不是以上一輪為基準）：
   mirror   左右鏡射，true / false
+  flip_y   上下翻轉，true / false
   scale    0.85 ~ 1.2
   shift_x  -0.08 ~ 0.08
   shift_y  -0.08 ~ 0.08
+
+## 方向與交點：一定先判斷，再決定 fit
+
+座標方向以使用者眼前的手機畫面為準，不以物品自身的正反面為準。
+先找出主體的「視覺主軸」：杯身、瓶身、餐具、盒邊、手臂或道路從哪個
+畫面角落延伸到哪個角落。不要看見斜放就直接套用固定方向。
+
+對角線 diagonal 的內建基準是「左上 → 右下」（反斜線方向）：
+- 主體也是左上 → 右下：mirror=false、flip_y=false
+- 主體是右上 → 左下 /：mirror=true、flip_y=false
+- 主體方向和畫面上的線相反時，絕對不能回 good；要回 adjust 並翻向
+- diagonal 只用 mirror 選擇這兩種斜率，不要同時用 flip_y
+- placements 的 main 是整條主軸，不是交點；讓主體長邊沿線即可
+
+三分法與黃金分割的 main 基準點在左上交點，依畫面現況選最近且有意義的
+交點，不要永遠要求使用者移到左上：
+- 左上：mirror=false、flip_y=false
+- 右上：mirror=true、flip_y=false
+- 左下：mirror=false、flip_y=true
+- 右下：mirror=true、flip_y=true
+
+golden_spiral 也可用 mirror 與 flip_y 組成四種朝向；triangle 可在現場構圖
+確實倒置時使用 flip_y。portrait_environment 只能依視線空間使用 mirror，
+不得使用 flip_y 把人物眼睛導向畫面下方；portrait_center 通常不翻轉。
+
+good 表示「目前訊息列出的可見版型與方向」已合用，前端會保留目前方向。
+需要從已翻向版型回到內建基準時，要明確回 adjust 並把 mirror、flip_y 都設
+為 false（其他值回到 1、0、0）。只要最終方向不是基準方向，每一輪的 adjust
+都要填出完整最終參數，不能把 mirror 當成切換開關。
 
 ## 如何選擇版型
 
@@ -124,14 +154,15 @@ adjust 的四個參數（對整組框做）：
 - 人像背景有明顯直線或曲線動線時，也可選 diagonal 或 golden_spiral
 - 真的需要指定每樣物件位置與前後遮擋時，才選物件框版型
 
-構圖線版型同樣可以回傳 adjust；mirror 可改變構圖方向，scale 與
-shift_x / shift_y 可讓引導線和交點貼近現場主體。
+構圖線版型同樣可以回傳 adjust；mirror 與 flip_y 可選擇方向及四個交點，
+scale 與 shift_x / shift_y 可讓引導線和交點貼近現場主體。
 
 構圖交點代表「視覺重點」，不是要求整個物件中心硬壓在一個點上：
 - 杯子、瓶子、人物等高瘦主體：讓主體中軸靠近垂直分割線，杯蓋、標誌或眼睛靠近交點
 - 餐盤等寬扁主體：讓最重要的食物或色彩重心靠近交點
-- advice 要說清楚主體的哪個部位對哪條線，例如「杯身中線貼左三分線」，
-  不要籠統地寫「把杯子移到交點」
+- 點狀引導的 advice 要包含「具體部位＋確切交點」，例如「杯標靠右上交點」
+- 對角線的 advice 要包含兩端方向，例如「杯身由右上沿線延伸至左下」
+- 不要籠統地寫「把杯子移到交點」；更不要叫長條主體只對準線中央
 
 ## placements
 
@@ -182,7 +213,7 @@ placements 應把炸物餐盤視為主體，醬料杯可作陪襯，remove 應�
 只輸出 JSON，不要說明文字，不要 markdown 圍欄。空值用 null。
 
 {"fit":"good","layout":"版型id",
- "adjust":{"mirror":false,"scale":1,"shift_x":0,"shift_y":0},
+ "adjust":{"mirror":false,"flip_y":false,"scale":1,"shift_x":0,"shift_y":0},
  "scene":"畫面描述15字內",
  "placements":[{"slot":"位置id","item":"物品名稱"}],
  "remove":["該移走的"],
@@ -340,11 +371,19 @@ def plan_text(intent: str, layouts: list[str], current: dict | None) -> str:
         slots = ", ".join(
             f"{s['id']}({s.get('label', '')})"
             f"[{','.join(f'{v:.2f}' for v in s['box'])}]"
+            + (f" 錨點[{','.join(f'{v:.2f}' for v in s['anchor'])}]"
+               if s.get("anchor") else "")
+            + (f" 引導={s['guide']}" if s.get("guide") else "")
             for s in current.get("slots", [])
         )
+        guide = ""
+        if current.get("guide_only"):
+            guide = f"\n  構圖線：{current.get('composition', 'unknown')}"
+            if current.get("orientation"):
+                guide += f"，目前方向={current['orientation']}"
         parts.append(
             f"目前版型：{current.get('id')}「{current.get('name', '')}」"
-            f"\n  位置：{slots}"
+            f"{guide}\n  位置：{slots}"
         )
     return "\n".join(parts)
 

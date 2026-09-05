@@ -8,19 +8,23 @@ import { PREFER } from "../schema.js";
 export const diagonal = {
   id: "diagonal",
   name: "對角線",
-  hint: "讓主體沿斜線延伸，增加方向感",
+  hint: "讓主體的長邊沿整條斜線延伸",
   minObjects: 1,
   maxObjects: 2,
   guideOnly: true,
-  composition: { type: "diagonal" },
+  composition: {
+    type: "diagonal",
+    baseDirection: "top_left_to_bottom_right",
+  },
   slots: [
     {
       id: "main",
-      box: [0.43, 0.22, 0.84, 0.58],
-      anchor: [0.66, 0.40],
+      box: [0.20, 0.16, 0.80, 0.74],
+      anchor: [0.50, 0.45],
+      guide: "axis",
       depth: 0,
       prefer: PREFER.HERO,
-      label: "主體沿斜線",
+      label: "主體長邊沿線",
     },
     {
       id: "secondary",
