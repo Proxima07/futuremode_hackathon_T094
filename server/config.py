@@ -18,6 +18,13 @@ def _int(key: str, default: int) -> int:
         return default
 
 
+def _float(key: str, default: float) -> float:
+    try:
+        return float(os.getenv(key, "") or default)
+    except ValueError:
+        return default
+
+
 class Settings:
     # Provider 優先序，由左到右 fallback
     PROVIDER_CHAIN = [
@@ -26,6 +33,7 @@ class Settings:
         if s.strip()
     ]
     TIMEOUT_MS = _int("VLM_TIMEOUT_MS", 2500)
+    VLM_TEMPERATURE = max(0.0, min(1.0, _float("VLM_TEMPERATURE", 0.0)))
     IMAGE_MAX_EDGE = _int("IMAGE_MAX_EDGE", 512)
 
     NCHC_BASE_URL = os.getenv("NCHC_BASE_URL", "").strip()

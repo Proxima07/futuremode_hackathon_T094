@@ -22,6 +22,13 @@ NULLISH = {"null", "none", "nil", "n/a", "na", "-", ""}
 
 FITS = {"good", "adjust", "custom"}
 PREFERS = {"hero", "tall_or_large", "short_or_small", "any"}
+PLAN_PHASES = {"searching", "guiding"}
+ALIGNMENTS = {"move", "ready", "lost"}
+GUIDANCE_ACTIONS = {
+    "none", "move_left", "move_right", "move_up", "move_down",
+    "move_closer", "move_farther", "rotate_clockwise",
+    "rotate_counterclockwise", "reframe",
+}
 
 # 三級判定，不是只有「好」和「壞」。
 # stylish 是刻意保留的：夜店藍光、餐廳暖黃燈、黃昏側逆光
@@ -227,7 +234,8 @@ def validate_custom(raw: Any) -> dict | None:
 def validate_plan(raw: dict | None, allowed_layouts: set[str],
                   layout_slots: dict[str, list[str]],
                   allow_custom: bool = True,
-                  current: dict | None = None) -> dict | None:
+                  current: dict | None = None,
+                  phase: str = "searching") -> dict | None:
     """驗證並清洗擺放計畫。
 
     Args:
@@ -239,6 +247,9 @@ def validate_plan(raw: dict | None, allowed_layouts: set[str],
     if not isinstance(raw, dict):
         return None
 
+    phase = phase if phase in PLAN_PHASES else "searching"
+    if phase == "guiding" and not (current and norm(current.get("id"))):
+        return None
     fit = enum(raw.get("fit"), FITS, "good")
 
     # ── 動態版型 ─────────────────────────────
@@ -262,10 +273,17 @@ def validate_plan(raw: dict | None, allowed_layouts: set[str],
         else:
             return None
 
+    # GUIDING 的構圖已經定案。就算模型又提出新版型或新座標，也只把它
+    # 當作對準判斷，後端先固定回目前版型，前端再做第二層保護。
+    if phase == "guiding" and current and norm(current.get("id")):
+        layout = norm(current.get("id"))
+        fit = "good"
+        custom = None
+
     # ── 微調參數 ─────────────────────────────
     adjust = None
     if fit == "adjust":
-        a = raw.get("adjust") or {}
+        a = raw.get("adjust") if isinstance(raw.get("adjust"), dict) else {}
         adjust = {
             "mirror": flag(a.get("mirror")),
             "flip_y": flag(a.get("flip_y")),
@@ -279,6 +297,8 @@ def validate_plan(raw: dict | None, allowed_layouts: set[str],
     # ── 物品配置 ─────────────────────────────
     if custom:
         valid_slots = {s["id"] for s in custom["slots"]}
+    elif phase == "guiding" and current:
+        valid_slots = {s["id"] for s in current.get("slots", [])}
     elif layout in layout_slots:
         valid_slots = set(layout_slots[layout])
     elif current:
@@ -291,7 +311,8 @@ def validate_plan(raw: dict | None, allowed_layouts: set[str],
         valid_slots = set()
 
     placements, used = [], set()
-    for p in (raw.get("placements") or []):
+    raw_placements = raw.get("placements")
+    for p in (raw_placements if isinstance(raw_placements, list) else []):
         if not isinstance(p, dict):
             continue
         slot = norm(p.get("slot"))
@@ -299,18 +320,57 @@ def validate_plan(raw: dict | None, allowed_layouts: set[str],
         if not slot or not item or slot not in valid_slots or slot in used:
             continue
         used.add(slot)
-        placements.append({"slot": slot, "item": item[:10]})
+        placements.append({
+            "slot": slot, "item": item[:10],
+            "feature": (norm(p.get("feature")) or "")[:14],
+        })
+
+    # 鎖定的不只是座標，也包括對準部位，避免「杯標」忽然變成「杯蓋」。
+    if phase == "guiding" and current:
+        targets = {s["id"]: s for s in current.get("slots", [])}
+        for p in placements:
+            target = targets.get(p["slot"], {})
+            p["item"] = (norm(target.get("item")) or p["item"])[:10]
+            p["feature"] = (norm(target.get("feature")) or p["feature"])[:14]
 
     remove = []
-    for r in (raw.get("remove") or []):
+    raw_remove = raw.get("remove")
+    for r in (raw_remove if isinstance(raw_remove, list) else []):
         v = norm(r)
         if v and v not in remove:
             remove.append(v[:10])
         if len(remove) >= 5:
             break
 
+    # ── 引導是否完成 ──────────────────────────
+    alignment = enum(raw.get("alignment"), ALIGNMENTS, "move")
+    action = enum(raw.get("action"), GUIDANCE_ACTIONS, "reframe")
+    advice = (norm(raw.get("advice")) or "")[:30]
+
+    # 還有明確雜物要移除、或根本沒有辨識到主體時，不得宣告可拍攝。
+    primary_slots = {"main", "person", "detail"} & valid_slots
+    if phase == "guiding" and current:
+        primary_slots = {s["id"] for s in current.get("slots", [])
+                         if s.get("prefer") == "hero"} or primary_slots
+    has_subject = bool(placements) and (
+        not primary_slots or any(p["slot"] in primary_slots for p in placements)
+    )
+    if not has_subject:
+        alignment = "lost"
+        placements = []
+    elif alignment == "ready" and remove:
+        alignment = "move"
+    if alignment == "ready":
+        action = "none"
+        advice = ""
+    elif alignment == "lost":
+        action = "none"
+        advice = ""
+    elif action == "none":
+        action = "reframe"
+
     # ── 光線 ────────────────────────────────
-    lr = raw.get("light") or {}
+    lr = raw.get("light") if isinstance(raw.get("light"), dict) else {}
     light = {
         "verdict": enum(lr.get("verdict"), LIGHT_VERDICT, "ok"),
         "source": enum(lr.get("source"), LIGHT_SOURCE, "unknown"),
@@ -330,8 +390,11 @@ def validate_plan(raw: dict | None, allowed_layouts: set[str],
         "scene": (norm(raw.get("scene")) or "")[:24],
         "placements": placements,
         "remove": remove,
+        "alignment": alignment,
+        "action": action,
+        "ready_to_capture": alignment == "ready",
         "light": light,
-        "advice": (norm(raw.get("advice")) or "")[:30],
+        "advice": advice,
         "source": "vlm",
     }
 

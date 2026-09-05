@@ -57,11 +57,16 @@ async def plan(req: PlanRequest):
         return {"fallback": True, "reason": "沒有可用的版型"}
 
     current = req.current.model_dump() if req.current else None
+    if req.phase == "guiding" and not current:
+        return {"fallback": True, "reason": "引導階段需要固定目標"}
     result = await chain.ask(
-        prompts.PLAN_SYSTEM,
+        prompts.GUIDING_SYSTEM if req.phase == "guiding" else prompts.PLAN_SYSTEM,
         req.image,
-        prompts.plan_text(req.intent, sorted(allowed), current),
-        max_tokens=250,
+        prompts.plan_text(
+            req.intent, sorted(allowed), current,
+            phase=req.phase, last_action=req.last_action, last_advice=req.last_advice,
+        ),
+        max_tokens=280 if req.phase == "guiding" else 360,
     )
     if result is None:
         return {"fallback": True, "reason": "所有 provider 都失敗"}
@@ -70,6 +75,7 @@ async def plan(req: PlanRequest):
         validate.parse_json(result.text), allowed, LAYOUT_SLOTS,
         allow_custom=False,      # 動態版型走 /api/custom
         current=current,
+        phase=req.phase,
     )
     if clean is None:
         log.warning("plan 驗證失敗：%s", (result.text or "")[:200])
@@ -77,7 +83,9 @@ async def plan(req: PlanRequest):
 
     # 主路徑不做動態版型，只回報「需要」，前端再去打 /api/custom
     raw_fit = (validate.parse_json(result.text) or {}).get("fit")
-    clean["needs_custom"] = validate.norm(raw_fit) == "custom"
+    clean["needs_custom"] = (
+        req.phase == "searching" and validate.norm(raw_fit) == "custom"
+    )
 
     clean["latency_ms"] = _elapsed(t0)
     clean["provider"] = result.provider

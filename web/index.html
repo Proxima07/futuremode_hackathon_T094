@@ -31,9 +31,11 @@
   </div>
 
   <div id="lightBar" class="hidden"></div>
-  <div id="hint"></div>
+  <div id="hint" role="status" aria-live="polite"></div>
 
+  <div id="compositionStatus" role="status" data-phase="searching">選擇構圖中</div>
   <button id="shutter" disabled aria-label="拍照"></button>
+  <button id="reanalyzeBtn" type="button" disabled>重新分析</button>
   <pre id="debug" class="hidden"></pre>
 
   <!-- 啟動畫面。iOS 需要使用者主動點擊才能開相機 -->

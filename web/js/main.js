@@ -15,6 +15,7 @@ import * as camera from "./camera/camera.js";
 import * as devices from "./camera/devices.js";
 import { warmup, resetSceneMemory } from "./lib/api.js";
 import { RemotePlanner } from "./planner/remotePlanner.js";
+import { PlanStabilizer, PLAN_PHASE } from "./planner/planStabilizer.js";
 import { summarize, visibleRegion } from "./vision/exposure.js";
 import { OverlayCanvas } from "./ui/overlayCanvas.js";
 import { HintBar } from "./ui/hintBar.js";
@@ -41,6 +42,8 @@ const el = {
   camera: $("cameraPicker"),
   zoom: $("zoomControl"),
   shutter: $("shutter"),
+  status: $("compositionStatus"),
+  reanalyze: $("reanalyzeBtn"),
   start: $("startBtn"),
   startScreen: $("startScreen"),
   error: $("errorBox"),
@@ -48,6 +51,7 @@ const el = {
 };
 
 let overlay, hint, badge, intentPicker, cameraPicker, zoomControl, planner, debugTimer;
+const stabilizer = new PlanStabilizer(CONFIG.STABILITY);
 
 /** 目前的狀態。改變時呼叫 render() 重畫。 */
 const state = {
@@ -57,6 +61,9 @@ const state = {
   /** 實際畫出來的版型（可能是調整過或動態生成的） */
   layout: null,
   items: {},
+  features: {},
+  progress: "searching",
+  awaitingCustom: false,
   remove: [],
   advice: "",
   scene: "",
@@ -70,8 +77,14 @@ state.layout = state.baseLayout;
 
 function render() {
   if (!overlay) return;
+  if (stabilizer.phase === PLAN_PHASE.SEARCHING) {
+    overlay.clear();
+    return;
+  }
   try {
-    overlay.draw(state.layout, { items: state.items });
+    const aligned = stabilizer.phase === PLAN_PHASE.READY
+      ? Object.fromEntries(Object.keys(state.items).map((id) => [id, true])) : {};
+    overlay.draw(state.layout, { items: state.items, aligned });
   } catch (err) {
     console.error("重畫失敗：", err);
   }
@@ -100,19 +113,13 @@ el.start.addEventListener("click", async () => {
 async function onCameraReady() {
   el.startScreen.classList.add("hidden");
 
-  overlay = new OverlayCanvas(el.canvas, render);
-  hint = new HintBar(el.hint);
+  overlay ??= new OverlayCanvas(el.canvas, render);
+  hint ??= new HintBar(el.hint);
 
-  intentPicker = new IntentPicker(el.intent, INTENTS, onIntentChange);
+  intentPicker ??= new IntentPicker(el.intent, INTENTS, onIntentChange);
   intentPicker.setById(state.intent.id);
 
-  badge = new LayoutBadge(el.badge, layoutsFor(state.intent), (picked) => {
-    state.baseLayout = picked;
-    state.layout = picked;
-    state.items = {};
-    resetSceneMemory();
-    render();
-  });
+  badge ??= new LayoutBadge(el.badge, layoutsFor(state.intent), onManualPick);
   badge.setAuto(state.baseLayout.id);
 
   // 鏡頭列舉一定要在取得權限之後，否則 label 全是空的。
@@ -135,10 +142,14 @@ async function onCameraReady() {
     }
   }
 
-  cameraPicker = new CameraPicker(el.camera, onCameraSwitch);
+  cameraPicker ??= new CameraPicker(el.camera, onCameraSwitch);
   cameraPicker.setDevices(cameras, camera.currentDevice());
 
-  zoomControl = new ZoomControl(el.zoom, camera.setZoom);
+  zoomControl ??= new ZoomControl(el.zoom, async (value) => {
+    resumeForView();
+    try { return await camera.setZoom(value); }
+    finally { resumeForView(); }
+  });
   zoomControl.configure(camera.zoomInfo());
 
   hint.set("正在看畫面…", "info");
@@ -146,13 +157,76 @@ async function onCameraReady() {
   render();
   warmup();
 
-  planner = new RemotePlanner(el.video, getPlanContext, {
-    onPlan, onLight, onCustom,
+  planner ??= new RemotePlanner(el.video, getPlanContext, {
+    onPlan, onLight, onCustom, onViewChanged: resumeForView,
   });
+  startAnalysis();
   planner.start();
 
   el.shutter.disabled = false;
-  el.shutter.addEventListener("click", capture);
+  el.reanalyze.disabled = false;
+}
+
+el.shutter.addEventListener("click", capture);
+el.reanalyze.addEventListener("click", () => startAnalysis());
+window.addEventListener("orientationchange", () => resumeForView());
+
+function onManualPick(picked) {
+  state.baseLayout = picked;
+  state.layout = picked;
+  state.items = {};
+  state.features = {};
+  state.remove = [];
+  state.advice = "";
+  state.awaitingCustom = false;
+  state.progress = "guiding";
+  stabilizer.forceLock({ layout: picked.id });
+  planner?.invalidate();
+  syncPhase();
+}
+
+/** 只有明確重新分析／情境切換／主體持續消失，才重新選目標。 */
+function startAnalysis({ preserveManual = false } = {}) {
+  state.items = {};
+  state.features = {};
+  state.remove = [];
+  state.advice = "";
+  state.scene = "";
+  state.awaitingCustom = false;
+  state.progress = "searching";
+  if (preserveManual && badge?.locked) {
+    stabilizer.forceLock({ layout: state.layout.id });
+  } else {
+    stabilizer.reset();
+    badge?.unlock();
+    state.layout = state.baseLayout;
+    badge?.setAuto(state.baseLayout.id);
+  }
+  planner?.invalidate();
+  resetSceneMemory();
+  syncPhase();
+}
+
+/** 移動／縮放只撤銷 READY，不重新選交點。 */
+function resumeForView() {
+  stabilizer.resumeGuiding();
+  state.progress = "resumed";
+  state.awaitingCustom = false;
+  planner?.invalidate();
+  syncPhase();
+}
+
+function syncPhase() {
+  const phase = stabilizer.phase;
+  badge?.setPhase(phase);
+  el.status.dataset.phase = phase;
+  el.status.textContent = {
+    searching: "選擇構圖中", guiding: "目標已固定", ready: "✓ 可以拍攝",
+  }[phase];
+  el.shutter.dataset.ready = String(phase === PLAN_PHASE.READY);
+  updateHint(state.items);
+  updateLightBar();
+  render();
 }
 
 /** planner 每次送出前都會呼叫這個，取得最新的情境 */
@@ -164,6 +238,10 @@ function getPlanContext() {
     state.layout.slots[0];
 
   return {
+    sessionId: stabilizer.sessionId,
+    phase: stabilizer.phase === PLAN_PHASE.SEARCHING ? "searching" : "guiding",
+    lastAction: stabilizer.lastAction,
+    lastAdvice: state.advice,
     intent: state.intent.id,
     layouts: layoutsFor(state.intent).map((l) => l.id),
     subjectBox: hero?.box ?? null,
@@ -177,6 +255,8 @@ function getPlanContext() {
         id: s.id, box: s.box, prefer: s.prefer, label: s.label ?? "",
         anchor: s.anchor ?? null,
         guide: s.guide ?? "",
+        item: state.items[s.id] ?? "",
+        feature: state.features[s.id] ?? "",
       })),
     },
   };
@@ -205,14 +285,13 @@ function onIntentChange(intent) {
   badge.locked = false;
   badge._render();
 
-  resetSceneMemory();      // 換情境後強制重新判斷
-  hint.set(intent.hint, "info");
-  updateLightBar();
-  render();
+  startAnalysis();
 }
 
 async function onCameraSwitch(deviceId) {
   planner?.stop();
+  startAnalysis();
+  state.light = null;
   hint.set("切換鏡頭…", "info");
   try {
     const res = await camera.switchTo(el.video, deviceId, onCameraLost);
@@ -237,6 +316,7 @@ async function onCameraSwitch(deviceId) {
 
 function onCameraLost() {
   planner?.stop();
+  stabilizer.reset();
   hint?.set("相機中斷了", "warn");
   overlay?.clear();
   el.zoom?.classList.add("hidden");
@@ -248,38 +328,58 @@ function onCameraLost() {
   el.start.disabled = false;
   el.start.textContent = "重新啟動相機";
   el.shutter.disabled = true;
+  el.reanalyze.disabled = true;
 }
 
 // ── VLM 回來時更新狀態 ──────────────────────────────
 
 function onPlan(plan) {
   state.lastPlanAt = performance.now();
-  state.scene = plan.scene ?? "";
-  state.remove = plan.remove ?? [];
-  state.advice = plan.advice ?? "";
-  state.fit = plan.fit ?? "good";
+  if (state.awaitingCustom) return true;
+  const event = stabilizer.ingest(plan);
+  state.progress = event.kind;
 
-  // ── 版型 ────────────────────────────────
-  // 動態版型走 /api/custom，這裡只處理內建版型與微調
-  if (!badge.locked) {
-    const base = plan.layout ? getLayout(plan.layout) : state.baseLayout;
-    const sameBase = base.id === state.baseLayout?.id;
-    state.baseLayout = base;
-    if (plan.fit === "adjust") {
-      state.layout = applyAdjust(base, plan.adjust);
-    } else if (!(plan.fit === "good" && sameBase && state.layout?.adjusted)) {
-      state.layout = base;
-    }
-    badge.setAuto(base.id, state.layout?.adjustment ?? false);
+  if (event.kind === "replan") {
+    startAnalysis({ preserveManual: true });
+    return false;
   }
 
-  applyItems(plan.placements);
-  updateHint(state.items);
-  render();
+  if (event.kind === "locked") {
+    const selected = event.plan;
+    // 唯一允許 LLM 套用版型／adjust 的入口。GUIDING 回應走不到這裡。
+    const base = getLayout(selected.layout) ?? state.baseLayout;
+    state.baseLayout = base;
+    state.layout = selected.fit === "adjust" ? applyAdjust(base, selected.adjust) : base;
+    state.fit = selected.fit ?? "good";
+    state.scene = selected.scene ?? "";
+    state.remove = selected.remove ?? [];
+    state.advice = selected.advice ?? "";
+    applyItems(selected.placements);
+    badge.setAuto(base.id, state.layout?.adjustment ?? false);
+    state.awaitingCustom = !!selected.needs_custom && !badge.locked;
+  } else if (event.kind === "guidance" && event.update) {
+    state.remove = plan.remove ?? [];
+    state.advice = plan.advice ?? "";
+  } else if (event.kind === "ready") {
+    state.remove = [];
+    state.advice = "";
+    planner?.setPlanPaused(true);
+  } else if (event.kind === "resumed") {
+    planner?.invalidate();
+  }
+
+  // 手選版型／動態版型第一次辨識後，只填尚未設定的主體與對準部位。
+  // 不接受後續輸出改名或換部位；確實換主體應先 lost 再重新分析。
+  if (event.kind !== "locked" && stabilizer.phase === PLAN_PHASE.GUIDING && plan.alignment !== "lost") {
+    applyItems(plan.placements, true);
+  }
+  syncPhase();
+  return state.awaitingCustom;
 }
 
 /** 光線分析回來。獨立路徑，不影響版型 */
 function onLight(light) {
+  if (stabilizer.phase === PLAN_PHASE.READY) return;
   state.light = light;
   updateLightBar();
 }
@@ -292,30 +392,70 @@ function onLight(light) {
  * ——那樣使用者根本來不及照著擺。
  */
 function onCustom(res) {
-  if (badge.locked) return;
-  const dyn = toLayout(res.custom);
-  if (!dyn) return;
+  if (!state.awaitingCustom || badge.locked) return;
+  state.awaitingCustom = false;
+  const dyn = res?.custom ? toLayout(res.custom) : null;
+  if (!dyn) {
+    state.progress = "guiding";
+    syncPhase();
+    return;
+  }
 
   state.layout = dyn;
   state.fit = "custom";
+  state.advice = "";
+  state.remove = [];
+  stabilizer.forceLock({ layout: dyn.id });
+  planner?.invalidate();
+  state.progress = "guiding";
   badge.setDynamic(dyn.name);
 
   applyItems(res.placements);
-  updateHint(state.items);
-  render();
+  syncPhase();
 }
 
 /** 把 placements 轉成 slot → 物品名稱，只保留目前版型有的位置 */
-function applyItems(placements) {
+function applyItems(placements, onlyMissing = false) {
   const valid = new Set(state.layout.slots.map((s) => s.id));
-  const items = {};
+  const items = onlyMissing ? { ...state.items } : {};
+  const features = onlyMissing ? { ...state.features } : {};
   for (const p of placements ?? []) {
-    if (valid.has(p.slot)) items[p.slot] = p.item;
+    if (!valid.has(p.slot)) continue;
+    if (!items[p.slot]) items[p.slot] = p.item;
+    if (!features[p.slot] && p.feature) features[p.slot] = p.feature;
   }
   state.items = items;
+  state.features = features;
 }
 
 function updateHint(items) {
+  if (!hint) return;
+  if (stabilizer.phase === PLAN_PHASE.READY) {
+    hint.set("構圖完成，可以拍攝", "good");
+    return;
+  }
+  if (state.awaitingCustom) {
+    hint.set("正在建立這個場景的固定構圖…", "info");
+    return;
+  }
+  if (stabilizer.phase === PLAN_PHASE.SEARCHING) {
+    hint.set(state.progress === "no_subject"
+      ? "讓拍攝主體進入鏡頭，再保持一下"
+      : "先保持畫面，正在確認構圖方案…", "info");
+    return;
+  }
+  if (state.progress === "lost_pending") {
+    hint.set("暫時找不到原主體，請讓它回到畫面", "warn");
+    return;
+  }
+  if (state.progress === "ready_pending") {
+    hint.set("已接近目標，保持一下確認構圖…", "info");
+    return;
+  }
+  if (state.progress === "resumed") {
+    hint.set("視野已改變，沿用固定目標重新確認", "info");
+    return;
+  }
   // 優先序：該移走什麼 > 構圖建議 > 通用提示
   if (state.remove.length) {
     hint.set(`把${state.remove[0]}移出畫面`, "warn");
@@ -357,6 +497,15 @@ function updateHint(items) {
 function updateLightBar() {
   const l = state.light;
 
+  if (stabilizer.phase === PLAN_PHASE.READY) {
+    el.light.textContent = l?.verdict === "problem"
+      ? "構圖已完成；拍攝前仍請確認主體亮度"
+      : "保持目前構圖，確認清晰後按快門";
+    el.light.dataset.level = l?.verdict === "problem" ? "warn" : "good";
+    el.light.classList.remove("hidden");
+    return;
+  }
+
   if (!l) {
     el.light.textContent = "分析光線中…";
     el.light.dataset.level = "idle";
@@ -368,6 +517,7 @@ function updateLightBar() {
   const envIcon = LIGHT_TEXT.envIcon[l.env] ?? "";
   const parts = [];
   let level = "good";
+  const choosing = stabilizer.phase === PLAN_PHASE.SEARCHING;
 
   if (l.verdict === "problem") {
     level = "bad";
@@ -379,16 +529,16 @@ function updateLightBar() {
     level = "style";
     // 風格要先被指認出來，使用者才知道系統懂他在什麼場合
     parts.push(`${envIcon} ${l.mood || envName}`.trim());
-    if (l.tip) parts.push(l.tip);
+    if (choosing && l.tip) parts.push(l.tip);
   } else {
     // good：不用改，那就說點有用的——光從哪來
     parts.push(
       LIGHT_TEXT.source[l.source] || (envName ? envIcon + " " + envName : "光線良好")
     );
-    if (l.tip) parts.push(l.tip);
+    if (choosing && l.tip) parts.push(l.tip);
   }
 
-  if (l.shoot_from !== "keep") {
+  if (choosing && l.shoot_from !== "keep") {
     parts.push(LIGHT_TEXT.shoot[l.shoot_from] ?? "");
   }
 
@@ -456,6 +606,7 @@ function updateDebug() {
       (state.layout?.dynamic ? " 動態" : "") +
       (badge?.locked ? " 鎖定" : ""),
     `場景 ${state.scene || "—"}`,
+    `決策 ${stabilizer.phase} · ${state.progress} · 票 ${stabilizer.snapshot.readyHistory.join(",")}`,
     `指派 ${JSON.stringify(state.items)}`,
     `移除 ${state.remove.join("、") || "—"}`,
     `曝光 ${summarize(planner?.lastExposure)}`,
@@ -482,23 +633,19 @@ window.addEventListener("keydown", (e) => {
   if (i >= 0) {
     const list = layoutsFor(state.intent);
     if (list[i]) {
-      state.baseLayout = list[i];
-      state.layout = list[i];
-      state.items = {};
-      resetSceneMemory();
       if (badge) {
         badge.index = i;
         badge.locked = true;
         badge._render();
       }
-      render();
+      onManualPick(list[i]);
     }
     return;
   }
 
   if (k === "i") intentPicker?.next();
   if (k === "c") cameraPicker?.next();
-  if (k === "u") badge?.unlock();
+  if (k === "u") startAnalysis();
 
   if (k === "m" && overlay) {
     overlay.maskAlpha = overlay.maskAlpha > 0 ? 0 : 0.5;

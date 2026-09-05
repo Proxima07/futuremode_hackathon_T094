@@ -21,6 +21,7 @@ export class LayoutBadge {
     this.adjusted = false;  // 這次的版型有沒有被微調過
     this.flipped = false;   // 是否因現場方向而左右／上下翻向
     this.dynamicName = null; // 有值代表正在用 VLM 生成的動態版型
+    this.phase = "searching";
 
     el.addEventListener("click", () => this._next());
   }
@@ -53,6 +54,11 @@ export class LayoutBadge {
     return this.layouts[this.index];
   }
 
+  setPhase(phase) {
+    this.phase = phase;
+    this._render();
+  }
+
   _next() {
     this.dynamicName = null;
     this.adjusted = false;
@@ -71,8 +77,12 @@ export class LayoutBadge {
 
   _render() {
     const name = this.dynamicName ?? this.current?.name ?? "—";
-    const tag = this.locked
-      ? "已鎖定"
+    const tag = this.phase === "ready"
+      ? "可拍攝"
+      : this.locked
+      ? "手動"
+      : this.phase === "guiding"
+        ? "已定案"
       : this.dynamicName
         ? "AI 生成"
         : this.flipped
@@ -80,7 +90,13 @@ export class LayoutBadge {
           : this.adjusted
             ? "已微調"
             : "自動";
-    this.el.innerHTML =
-      `<span class="name">${name}</span><span class="tag">${tag}</span>`;
+    // 動態版型名稱來自模型，不能當 HTML 插入。
+    const nameEl = document.createElement("span");
+    nameEl.className = "name";
+    nameEl.textContent = name;
+    const tagEl = document.createElement("span");
+    tagEl.className = "tag";
+    tagEl.textContent = tag;
+    this.el.replaceChildren(nameEl, tagEl);
   }
 }

@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from server.config import settings
+
 
 @dataclass
 class VLMResult:
@@ -77,7 +79,9 @@ class OpenAICompatible(VLMProvider):
                     ]},
                 ],
                 max_tokens=max_tokens,
-                temperature=0.2,
+                # 即時構圖是分類／控制訊號，不需要創作多樣性。降到 0
+                # 可減少相鄰影格在同一畫面下給出不同方向的機率。
+                temperature=settings.VLM_TEMPERATURE,
             ),
             timeout=timeout_s,
         )

@@ -7,7 +7,7 @@
 
 export const CONFIG = {
   /** 版本戳記。console 會印出來，用來確認載入的不是快取的舊檔 */
-  BUILD: "v0.29",
+  BUILD: "v0.30",
 
   /** 快層迴圈的頻率。10 次/秒足夠流暢，又不會把手機電力燒光 */
   FPS: 10,
@@ -40,6 +40,25 @@ export const CONFIG = {
   CUSTOM_COOLDOWN_MS: 15000,
 
   /**
+   * 構圖收斂條件。LLM 只負責提案與判斷，這些多幀規則由程式保證。
+   */
+  STABILITY: {
+    /** 相同版型與方向出現幾次後才定案 */
+    planConfirmations: 2,
+    /** 模型意見一直不同時，最多等幾次就以多數／最近結果定案 */
+    maxPlanSamples: 3,
+    /** 最近視窗中至少幾票 ready 才顯示可以拍攝 */
+    readyVotes: 2,
+    readyWindow: 3,
+    /** 連續幾次判斷主體消失才重新規劃 */
+    lostConfirmations: 2,
+    /** 新移動方向連續出現幾次才替換目前提示 */
+    guidanceConfirmations: 2,
+    /** 網路中斷／很慢時，過期證據不能和新影格湊票 */
+    evidenceMaxAgeMs: 10000,
+  },
+
+  /**
    * 疊層的暗化強度。
    * 0 = 完全透明，只留框線，對底層影片的干擾最小。
    * 執行時按 M 可以在 0 / 0.5 之間切換來比較。
@@ -48,6 +67,8 @@ export const CONFIG = {
 
   /**
    * 對齊容忍值。
+   * 供舊版本機 alignment 模組使用；目前 RemotePlanner 的完成判定由
+   * GUIDING_SYSTEM 的目視容忍規則及 STABILITY 投票控制，不讀這組值。
    *
    * 這兩個數字決定「什麼叫對準了」。
    * 寧可調鬆一點：太嚴格的話使用者永遠對不準，會很挫折。

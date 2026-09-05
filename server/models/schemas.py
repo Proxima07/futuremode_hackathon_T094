@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from typing import Literal
 from pydantic import BaseModel, Field
 
 
@@ -19,6 +20,8 @@ class SlotIn(BaseModel):
     label: str = ""
     anchor: list[float] | None = None
     guide: str = ""
+    item: str = ""
+    feature: str = ""
 
 
 class LayoutIn(BaseModel):
@@ -74,6 +77,11 @@ class PlanRequest(BaseModel):
     image: str = Field(..., description="base64 JPEG，長邊已壓到 512")
     layouts: list[str] = Field(..., description="允許的內建版型 id")
     intent: str = Field(default="secondhand_listing")
+    phase: Literal["searching", "guiding"] = Field(
+        default="searching", description="searching / guiding；決定是否允許改版型")
+    last_action: str = Field(
+        default="none", description="上一個已確認的移動方向，避免建議來回跳動")
+    last_advice: str = Field(default="", max_length=100)
     current: LayoutIn | None = Field(
         default=None, description="目前正在用的版型，用來判斷合不合用")
 
@@ -105,6 +113,7 @@ class CustomRequest(BaseModel):
 class Placement(BaseModel):
     slot: str
     item: str
+    feature: str = ""
 
 
 class CustomSlot(BaseModel):
@@ -146,6 +155,9 @@ class PlanResponse(BaseModel):
     scene: str = ""
     placements: list[Placement] = []
     remove: list[str] = []
+    alignment: str = "move"   # move / ready / lost
+    action: str = "reframe"
+    ready_to_capture: bool = False
     light: Light | None = None
     advice: str = ""
     source: str = "vlm"

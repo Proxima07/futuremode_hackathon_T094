@@ -75,7 +75,7 @@ html, body {
 /* ── 光線提示。獨立一條，因為它和構圖是兩件事 ────── */
 #lightBar {
   position: absolute;
-  left: 50%; bottom: 176px;
+  left: 50%; bottom: 210px;
   transform: translateX(-50%);
   max-width: 86%;
   padding: 8px 16px;
@@ -181,7 +181,11 @@ html, body {
   border-radius: 999px;
   background: rgba(20, 20, 24, .84);
   font-size: 16px;
-  white-space: nowrap;
+  width: max-content;
+  max-width: 92%;
+  white-space: normal;
+  text-align: center;
+  line-height: 1.4;
   transition: opacity .22s;
   pointer-events: none;
 }
@@ -201,10 +205,31 @@ html, body {
 }
 #shutter:disabled { opacity: .3; }
 #shutter:active:not(:disabled) { transform: translateX(-50%) scale(.92); }
+#shutter[data-ready="true"] {
+  border-color: #22c55e;
+  box-shadow: 0 0 0 5px rgba(34, 197, 94, .3);
+}
+#compositionStatus, #reanalyzeBtn {
+  position: absolute;
+  bottom: calc(max(38px, env(safe-area-inset-bottom)) + 15px);
+  max-width: calc(50% - 56px);
+  padding: 10px;
+  border-radius: 999px;
+  background: rgba(20, 20, 24, .88);
+  color: #f2f2f4;
+  font: inherit;
+  font-size: 13px;
+  text-align: center;
+}
+#compositionStatus { left: 10px; pointer-events: none; }
+#compositionStatus[data-phase="ready"] { color: #4ade80; }
+#reanalyzeBtn { right: 10px; min-height: 44px; border: 1px solid #666; cursor: pointer; }
+#reanalyzeBtn:disabled { opacity: .4; }
 
 /* ── 啟動畫面 ──────────────────────────────── */
 #startScreen {
   position: absolute; inset: 0;
+  z-index: 10;
   display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 26px;
   padding: 32px;

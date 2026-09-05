@@ -68,11 +68,10 @@ export function grabFrame(video, maxEdge = CONFIG.IMAGE_MAX_EDGE) {
  */
 let lastThumb = null;
 
-export function sceneChanged(video, threshold = 6) {
-  const vw = video.videoWidth;
-  if (!vw) return false;
-
-  thumbCtx.drawImage(video, 0, 0, THUMB, THUMB);
+export function sampleFrame(video) {
+  if (!video?.videoWidth) return null;
+  const { sx, sy, sw, sh } = visibleRegion(video);
+  thumbCtx.drawImage(video, sx, sy, sw, sh, 0, 0, THUMB, THUMB);
   const data = thumbCtx.getImageData(0, 0, THUMB, THUMB).data;
 
   // 轉灰階
@@ -81,17 +80,23 @@ export function sceneChanged(video, threshold = 6) {
     gray[p] = (data[i] * 299 + data[i + 1] * 587 + data[i + 2] * 114) / 1000;
   }
 
-  if (!lastThumb) {
-    lastThumb = gray;
-    return true;          // 第一次一定要送
-  }
+  return gray;
+}
 
+/** 去除全域亮度偏移，降低自動曝光／燈光變化造成的誤觸發。不是物件追蹤器。 */
+export function frameDifference(a, b) {
+  if (!a || !b || a.length !== b.length) return Infinity;
+  const mean = (v) => v.reduce((sum, n) => sum + n, 0) / v.length;
+  const offset = mean(a) - mean(b);
   let sum = 0;
-  for (let i = 0; i < gray.length; i++) {
-    sum += Math.abs(gray[i] - lastThumb[i]);
-  }
-  const diff = sum / gray.length;
+  for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i] - offset);
+  return sum / a.length;
+}
 
+export function sceneChanged(video, threshold = 6) {
+  const gray = sampleFrame(video);
+  if (!gray) return false;
+  const diff = frameDifference(gray, lastThumb);
   lastThumb = gray;
   return diff > threshold;
 }

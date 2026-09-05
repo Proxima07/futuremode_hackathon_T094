@@ -17,8 +17,9 @@ export class HintBar {
    * @param {"info"|"good"|"warn"} [tone]
    */
   set(text, tone = "info") {
-    if (text === this.current) return;   // 沒變就不要重繪，避免閃爍
+    if (text === this.current && tone === this.tone) return;
     this.current = text;
+    this.tone = tone;
 
     this.el.textContent = text;
     this.el.dataset.tone = tone;
