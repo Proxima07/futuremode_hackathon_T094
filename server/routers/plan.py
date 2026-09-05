@@ -38,6 +38,8 @@ LAYOUT_SLOTS = {
     "golden_spiral": ["main", "flow"],
     "triangle": ["main", "left", "right"],
     "diagonal": ["main", "secondary"],
+    "portrait_environment": ["person"],
+    "portrait_center": ["person"],
 }
 
 

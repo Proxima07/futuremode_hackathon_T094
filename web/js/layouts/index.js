@@ -20,12 +20,15 @@ import { goldenGrid } from "./definitions/goldenGrid.js";
 import { goldenSpiral } from "./definitions/goldenSpiral.js";
 import { triangle } from "./definitions/triangle.js";
 import { diagonal } from "./definitions/diagonal.js";
+import { portraitEnvironment } from "./definitions/portraitEnvironment.js";
+import { portraitCenter } from "./definitions/portraitCenter.js";
 import { validateLayout } from "./schema.js";
 
 /** 所有版型，順序不重要 */
 export const ALL = [
   single, heroProps, flatlay, detail, overhead, angle45,
   ruleThirds, goldenGrid, goldenSpiral, triangle, diagonal,
+  portraitEnvironment, portraitCenter,
 ];
 
 /** 依情境過濾出可用的版型，順序照情境的偏好 */

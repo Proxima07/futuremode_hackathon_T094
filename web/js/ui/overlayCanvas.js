@@ -154,7 +154,11 @@ export class OverlayCanvas {
     if (layout.guideOnly && layout.composition) {
       this._drawCompositionGuide(layout.composition);
       for (const slot of ordered) {
-        this._drawAnchor(slot, items[slot.id] ?? null, !!aligned[slot.id]);
+        const item = items[slot.id] ?? null;
+        // 沒有第二個物件時，不顯示「陪襯或留白」錨點。
+        // 構圖線本身已經能表示留白方向，多一顆空錨點只會遮住取景畫面。
+        if (slot.optional && !item) continue;
+        this._drawAnchor(slot, item, !!aligned[slot.id]);
       }
       return;
     }
@@ -223,6 +227,15 @@ export class OverlayCanvas {
       ctx.strokeStyle = "rgba(251,191,36,.92)";
       ctx.lineWidth = 2.4;
       this._guideLine(points, transform, true, 0.92, false);
+    } else if (type === "portrait_environment") {
+      // 眼睛／臉部落在一側交點，另外約三分之二保留環境敘事。
+      // mirror 會把人物側與留白側一起翻轉。
+      this._guideLine([[1 / 3, 0.07], [1 / 3, 0.93]], transform, true);
+      this._guideLine([[0.07, 0.30], [0.93, 0.30]], transform, false, 0.48);
+    } else if (type === "portrait_center") {
+      // 對稱環境只需要清楚的中軸與眼睛高度，不用再疊大型人物框。
+      this._guideLine([[0.50, 0.06], [0.50, 0.94]], transform, true);
+      this._guideLine([[0.12, 0.29], [0.88, 0.29]], transform, false, 0.48);
     }
 
     ctx.restore();

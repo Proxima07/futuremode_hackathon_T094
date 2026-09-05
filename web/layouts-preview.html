@@ -206,6 +206,12 @@ function drawComposition(stage, layout) {
     addPath(svg, points.map((p, i) =>
       `${i ? "L" : "M"} ${p[0].toFixed(2)} ${p[1].toFixed(2)}`
     ).join(" "), "line gold");
+  } else if (type === "portrait_environment") {
+    addPath(svg, `M ${100 / 3} 7 L ${100 / 3} 93`);
+    addPath(svg, "M 7 30 L 93 30", "line soft");
+  } else if (type === "portrait_center") {
+    addPath(svg, "M 50 6 L 50 94");
+    addPath(svg, "M 12 29 L 88 29", "line soft");
   }
   stage.appendChild(svg);
 }

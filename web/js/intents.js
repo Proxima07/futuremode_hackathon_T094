@@ -42,6 +42,16 @@ export const INTENTS = [
       "hero_props", "single", "flatlay", "angle45",
     ],
   },
+  {
+    id: "portrait",
+    name: "環境人像",
+    icon: "🧍",
+    hint: "讓人物成為主角，也保留環境的故事",
+    layouts: [
+      "portrait_environment", "portrait_center", "rule_thirds",
+      "golden_grid", "diagonal", "golden_spiral", "triangle",
+    ],
+  },
 ];
 
 export const DEFAULT_INTENT = INTENTS[0];

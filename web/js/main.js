@@ -284,9 +284,19 @@ function updateHint(items) {
   } else if (state.advice) {
     hint.set(state.advice, "info");
   } else if (Object.keys(items).length) {
-    hint.set("把東西移進對應的框裡", "info");
+    hint.set(
+      state.layout.guideOnly
+        ? "讓主體靠近引導點，沿構圖線保留空間"
+        : "把東西移進對應的框裡",
+      "info"
+    );
   } else {
-    hint.set("把要拍的東西放到鏡頭前", "info");
+    hint.set(
+      state.intent.id === "portrait"
+        ? "讓人物進入鏡頭，也保留有意義的背景"
+        : "把要拍的東西放到鏡頭前",
+      "info"
+    );
   }
 }
 

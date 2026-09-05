@@ -47,6 +47,7 @@ export const X1 = 0, Y1 = 1, X2 = 2, Y2 = 3;
 
 const GUIDE_TYPES = new Set([
   "thirds", "golden_grid", "golden_spiral", "triangle", "diagonal",
+  "portrait_environment", "portrait_center",
 ]);
 
 /**
