@@ -105,6 +105,8 @@ export class PlanStabilizer {
     this._lockedSignature = "";
     this._readyHistory = [];
     this._lostStreak = 0;
+    // 重新規劃時要忘掉舊主體，否則新場景會沿用上一個物件的名稱
+    this._lastPlacements = null;
     this._acceptedAction = null;
     this._pendingAction = null;
     this._pendingActionCount = 0;
@@ -221,6 +223,9 @@ export class PlanStabilizer {
   _lock(plan, signature) {
     this._phase = PLAN_PHASE.GUIDING;
     this._lockedPlan = plan;
+    // 鎖定當下就記住主體，之後引導階段模型漏填 placements 時
+    // 才有東西可以沿用，不會被誤判成主體不見。
+    if (plan.placements?.length) this._lastPlacements = plan.placements;
     this._lockedSignature = signature;
 
     const action = normalizeAction(plan?.action);
@@ -266,8 +271,35 @@ export class PlanStabilizer {
     let alignment = ["move", "ready", "lost"].includes(plan.alignment)
       ? plan.alignment
       : "move";
-    if (!plan.placements?.length) alignment = "lost";
-    else if (alignment === "ready" && plan.remove?.length) alignment = "move";
+
+    /**
+     * ────────────────────────────────────────────────
+     * 引導階段不要因為模型漏填 placements 就判定主體不見。
+     *
+     * GUIDING_SYSTEM 的重點是回 move / ready / lost，
+     * placements 只是附帶欄位，模型很容易省略。
+     * 原本寫 `if (!plan.placements?.length) alignment = "lost"`，
+     * 結果模型明明說了 ready，卻因為沒填 placements 被改判成 lost，
+     * 提示退回「把要拍的東西放到鏡頭前」——
+     * 但主體其實好好地在框裡。
+     *
+     * 在引導階段目標早就鎖定了，我們已經知道主體是什麼。
+     * 空的 placements 更可能是「模型沒寫」而不是「東西不見了」。
+     *
+     * 所以：只有模型「明確說 lost」才當成不見。
+     * placements 空的話沿用上一次已知的，讓框上的名稱不會閃掉。
+     * ────────────────────────────────────────────────
+     */
+    if (plan.placements?.length) {
+      this._lastPlacements = plan.placements;
+    } else if (alignment !== "lost" && this._lastPlacements?.length) {
+      plan = { ...plan, placements: this._lastPlacements };
+    } else if (alignment !== "lost" && !this._lastPlacements?.length) {
+      // 引導階段還沒有任何已知主體，這種情況才保守地當成不見
+      alignment = "lost";
+    }
+
+    if (alignment === "ready" && plan.remove?.length) alignment = "move";
 
     if (alignment === "lost") {
       this._lostStreak++;

@@ -52,12 +52,37 @@ test("subject loss and old evidence cannot be combined into READY", () => {
   assert.equal(s.ingest(ready(), 16000).kind, "ready");
 });
 
-test("clutter or empty placements cannot assert ready", () => {
+test("clutter cannot assert ready", () => {
   const s = lock();
   for (let i = 0; i < 3; i++) s.ingest(readyWithClutter());
-  assert.equal(s.phase, "guiding");
+  assert.equal(s.phase, "guiding", "有明確干擾物時不能宣告可拍攝");
+});
+
+/**
+ * 這裡的行為改過。
+ *
+ * 原本「ready 但 placements 空」會被當成主體不見，兩次就 replan。
+ * 但 GUIDING_SYSTEM 的重點是回 move / ready / lost，
+ * placements 只是附帶欄位，模型很容易省略。
+ * 實測就發生過：主體好好地在框裡，模型說 ready，
+ * 卻因為沒填 placements 被改判成 lost，
+ * 提示退回「把要拍的東西放到鏡頭前」。
+ *
+ * 引導階段目標早就鎖定了，我們已經知道主體是什麼。
+ * 現在只有模型「明確說 lost」才當成不見。
+ */
+test("引導階段漏填 placements 沿用已知主體，不當成不見", () => {
+  const s = lock();
   s.ingest(plan({ alignment: "ready", placements: [] }));
-  assert.equal(s.ingest(plan({ alignment: "ready", placements: [] })).kind, "replan");
+  const r = s.ingest(plan({ alignment: "ready", placements: [] }));
+  assert.notEqual(r.kind, "replan", "不該重新規劃");
+  assert.equal(s.phase, "ready", "應該正常進入可拍攝");
+});
+
+test("模型明確說 lost 才重新規劃", () => {
+  const s = lock();
+  s.ingest(plan({ alignment: "lost", placements: [] }));
+  assert.equal(s.ingest(plan({ alignment: "lost", placements: [] })).kind, "replan");
 });
 function readyWithClutter() { return plan({ alignment: "ready", remove: ["無關線材"] }); }
 

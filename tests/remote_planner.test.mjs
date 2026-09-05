@@ -353,7 +353,17 @@ test("truly changed frames keep the response clock fresh but never apply an old 
   assert.ok(deferred.includes("moving"));
 });
 
-test("movement is announced within 250ms while inference continues, then current result can apply", async (t) => {
+/**
+ * 移動判定改成需要連續兩次確認。
+ *
+ * 原本單幀比對就直接宣告移動，使用者手滑一下、
+ * 或自動曝光跳一下，引導提示就被清掉、可拍攝狀態被撤銷。
+ * 真正的移動會持續好幾幀，手震不會。
+ *
+ * 取樣間隔 250ms，連續兩次約 500ms，
+ * 對「使用者真的把鏡頭移開了」來說反應仍然夠快。
+ */
+test("movement is announced within two samples while inference continues, then current result can apply", async (t) => {
   const time = clock(t), network = fakeNetwork(1200), deferred = [], updates = [];
   const p = new RemotePlanner(video, () => ({confirming: true}), {
     onPlan: () => updates.push(performance.now()),
@@ -365,7 +375,11 @@ test("movement is announced within 250ms while inference continues, then current
   assert.equal(p.busy, true);
   pattern = 1;
   await time.advance(250);
-  assert.ok(deferred.some(d => d.reason === "moving" && d.at <= 1550));
+  assert.equal(deferred.some(d => d.reason === "moving"), false,
+    "單次取樣不該直接宣告移動，那樣手震就會打斷引導");
+  await time.advance(250);
+  assert.ok(deferred.some(d => d.reason === "moving" && d.at <= 1800),
+    "連續兩次確認後才宣告移動");
   assert.equal(p.controller, inFlight);
   assert.equal(inFlight.signal.aborted, false);
   assert.equal(p.revision, revision);

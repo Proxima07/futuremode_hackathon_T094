@@ -27,6 +27,16 @@ import {
 } from "../lib/api.js";
 import { measure } from "../vision/exposure.js";
 import { comparePreviewFrames } from "../vision/frameFreshness.js";
+
+/** 移動判定的參數。缺值時退回內建預設，不要變成 undefined。 */
+const MOTION = () => {
+  const m = CONFIG.MOTION ?? {};
+  return {
+    threshold: Number.isFinite(m.threshold) ? m.threshold : 16,
+    radius: Number.isFinite(m.radius) ? m.radius : 3,
+    confirmations: Number.isFinite(m.confirmations) ? m.confirmations : 2,
+  };
+};
 import { LightChangeMonitor } from "../vision/lightChangeMonitor.js";
 
 const TICK_MS = 50;
@@ -201,11 +211,33 @@ export class RemotePlanner {
   }
 
   _observePreview(frame, now) {
-    this.previewStable = !this.previousFrame || comparePreviewFrames(this.previousFrame, frame).fresh;
+    const motion = MOTION();
+    this.previewStable = !this.previousFrame
+      || comparePreviewFrames(this.previousFrame, frame, motion).fresh;
     this.previousFrame = frame;
-    if (this.displayFrame && !comparePreviewFrames(this.displayFrame, frame).fresh) {
-      this._deferPlan("moving");
-    } else if (this.lastAppliedFrameAt !== null && now - this.lastAppliedFrameAt > cfg("PLAN_MAX_FRAME_AGE_MS", 5000)) {
+
+    /**
+     * ────────────────────────────────────────────────
+     * 連續確認才算移動。
+     *
+     * 原本單幀比對就直接 _deferPlan("moving")，
+     * 使用者手滑一下、或自動曝光跳一下，
+     * 引導提示就被清掉、可拍攝狀態就被撤銷。
+     *
+     * 真正的移動會持續好幾幀，手震不會。
+     * 取樣間隔 250ms，連續兩次約 0.5 秒，
+     * 對「使用者真的把鏡頭移開了」來說反應仍然夠快。
+     * ────────────────────────────────────────────────
+     */
+    const moved = this.displayFrame
+      && !comparePreviewFrames(this.displayFrame, frame, motion).fresh;
+
+    this.movingStreak = moved ? (this.movingStreak ?? 0) + 1 : 0;
+
+    if (moved) {
+      if (this.movingStreak >= motion.confirmations) this._deferPlan("moving");
+    } else if (this.lastAppliedFrameAt !== null
+        && now - this.lastAppliedFrameAt > cfg("PLAN_MAX_FRAME_AGE_MS", 5000)) {
       this._deferPlan("expired");
     }
     if (now >= this.nextLightCheckAt) {
@@ -220,9 +252,10 @@ export class RemotePlanner {
   _checkReadyView(frame = sampleFrame(this.video)) {
     if (!this.planPaused || performance.now() - this.readyAt < 500) return;
     if (!frame) return;
-    this.changedFrames = !comparePreviewFrames(this.readyFrame, frame).fresh
+    const motion = MOTION();
+    this.changedFrames = !comparePreviewFrames(this.readyFrame, frame, motion).fresh
       ? this.changedFrames + 1 : 0;
-    if (this.changedFrames >= 2) this.on.onViewChanged?.();
+    if (this.changedFrames >= motion.confirmations) this.on.onViewChanged?.();
   }
 
   /** 失敗越多次間隔越長，不要一直撞掛掉的後端 */
@@ -353,7 +386,9 @@ export class RemotePlanner {
     }
     // 成功就恢復一秒目標，時間從開始推論算起，不再額外加 700ms。
     this.nextPlanAt = startedAt + PLAN_MS();
-    const comparison = comparePreviewFrames(submittedFrame, sampleFrame(this.video));
+    const comparison = comparePreviewFrames(
+      submittedFrame, sampleFrame(this.video), MOTION()
+    );
     this.lastFrameDifference = comparison;
     const expired = performance.now() - startedAt > cfg("PLAN_MAX_FRAME_AGE_MS", 5000);
     if (!comparison.fresh || expired) {
