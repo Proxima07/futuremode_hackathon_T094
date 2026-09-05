@@ -9,7 +9,8 @@
  * 非常慢，實測會從 300ms 惡化到逾時。
  *
  * 按「變化速度」拆開：
- *   plan    搜尋／引導時持續確認；READY 後低頻複查
+ *   scan    每秒本機取樣，不受網路請求阻塞
+ *   plan    所有階段都以每秒一次為目標，READY 也持續檢查固定目標
  *   light   房間的光不會變 → 每 6 秒
  *   custom  很少需要      → 只在 plan 說需要時，且有冷卻時間
  *
@@ -26,8 +27,8 @@ import {
 } from "../lib/api.js";
 import { measure } from "../vision/exposure.js";
 
-const READY_REVIEW_MS = 12000;
 const VIEW_CHANGE_THRESHOLD = 12;
+const TICK_MS = 50;
 
 /**
  * 設定值的保底。
@@ -44,8 +45,10 @@ function cfg(key, fallback) {
   return typeof v === "number" && Number.isFinite(v) ? v : fallback;
 }
 
-const PLAN_MS = () => cfg("PLAN_INTERVAL_MS", 700);
+const PLAN_MS = () => Math.max(250, cfg("PLAN_INTERVAL_MS", 1000));
+const SCAN_MS = () => Math.max(250, cfg("SCAN_INTERVAL_MS", 1000));
 const LIGHT_MS = () => cfg("LIGHT_INTERVAL_MS", 6000);
+const LIGHT_MAX_DEFER_MS = () => cfg("LIGHT_MAX_DEFER_MS", 30000);
 const CUSTOM_MS = () => cfg("CUSTOM_COOLDOWN_MS", 15000);
 
 export class RemotePlanner {
@@ -61,14 +64,26 @@ export class RemotePlanner {
 
     this.running = false;
     this.runId = 0;
+    this.timer = null;
+    this.dispatching = false;
+    this.nextScanAt = 0;
+    this.nextPlanAt = 0;
     this.paused = false;
-    /** READY 後只低頻確認，絕不重新計算版型座標。 */
+    /** 代表構圖已 READY；保留 v0.30 介面，但不再暫停構圖檢查。 */
     this.planPaused = false;
     /** 同時只讓一條路徑在飛，避免互相拖慢 */
     this.busy = false;
     this.controller = null;
+    this.activeKind = null;
 
-    this.lastPlanSent = 0;
+    this.lastPlanSent = null;
+    this.lastScanAt = null;
+    this.lastPlanResultAt = null;
+    this.lastPlanLatency = 0;
+    this.lastPlanGap = null;
+    this.lastLightLatency = 400;
+    this.planOutcome = "waiting";
+    this.plansSinceLight = 0;
     this.lastCustomAt = -Infinity;
     this.needsCustom = false;
     this.readyFrame = null;
@@ -82,20 +97,31 @@ export class RemotePlanner {
     this.lastLight = null;
 
     this.failures = 0;
+    this.failuresByKind = { plan: 0, light: 0, custom: 0 };
     this.lastLatency = 0;
     this.lastExposure = null;
-    this.stats = { plan: 0, light: 0, custom: 0, skip: 0 };
+    this.stats = { scan: 0, plan: 0, light: 0, custom: 0, skip: 0 };
 
     document.addEventListener("visibilitychange", () => {
       this.paused = document.hidden;
+      if (this.paused) {
+        this.controller?.abort();
+      } else {
+        this.on.onViewChanged?.();
+        this.nextScanAt = 0;
+        this.nextPlanAt = 0;
+      }
+      this._emitActivity();
     });
   }
 
   start() {
     if (this.running) return;
     this.running = true;
+    this.nextScanAt = 0;
+    this.nextPlanAt = 0;
     console.log(
-      `[planner] 節奏 plan ${PLAN_MS()}ms · light ${LIGHT_MS()}ms · ` +
+      `[planner] 取樣 ${SCAN_MS()}ms · plan 目標 ${PLAN_MS()}ms（含 READY） · light ${LIGHT_MS()}ms · ` +
       `custom 冷卻 ${CUSTOM_MS()}ms`
     );
     this._tick(++this.runId);
@@ -104,10 +130,13 @@ export class RemotePlanner {
   stop() {
     this.running = false;
     this.runId++;
+    clearTimeout(this.timer);
+    this.timer = null;
     this.controller?.abort();
+    this._emitActivity();
   }
 
-  /** 暫停／恢復構圖路徑。恢復時強制把下一幀視為新畫面。 */
+  /** 標示 READY／恢復引導；兩者仍以相同頻率檢查畫面。 */
   setPlanPaused(paused) {
     this.planPaused = !!paused;
     if (this.planPaused) {
@@ -116,7 +145,6 @@ export class RemotePlanner {
       this.readyAt = performance.now();
       this.changedFrames = 0;
     } else {
-      this.lastPlanSent = 0;
       this.needsCustom = false;
       resetSceneMemory();
       this.readyFrame = null;
@@ -128,11 +156,16 @@ export class RemotePlanner {
   invalidate() {
     this.controller?.abort();
     this.setPlanPaused(false);
+    this.nextPlanAt = 0;
+    this.nextScanAt = 0;
+    this.failuresByKind.plan = 0;
+    this.lastPlanResultAt = null;
+    this.planOutcome = "waiting";
+    this._emitActivity();
   }
 
-  _checkReadyView() {
-    if (!this.planPaused || performance.now() - this.readyAt < 2000) return;
-    const frame = sampleFrame(this.video);
+  _checkReadyView(frame = sampleFrame(this.video)) {
+    if (!this.planPaused || performance.now() - this.readyAt < 500) return;
     if (!frame) return;
     this.changedFrames = frameDifference(frame, this.readyFrame) > VIEW_CHANGE_THRESHOLD
       ? this.changedFrames + 1 : 0;
@@ -143,46 +176,91 @@ export class RemotePlanner {
   get interval() {
     return Math.min(
       8000,
-      PLAN_MS() * Math.pow(2, Math.min(this.failures, 4))
+      PLAN_MS() * Math.pow(2, Math.min(this.failuresByKind.plan, 3))
     );
   }
 
-  /**
-   * 計時基準是「上一件事做完之後」，不是「送出之時」。
-   * 後端變慢時節奏會自動放慢，請求永遠不會堆積。
-   */
-  async _tick(runId) {
-    while (this.running && runId === this.runId) {
-      await sleep(this.interval);
-      if (!this.running || runId !== this.runId) break;
-      if (this.paused || this.busy) continue;
+  get activity() {
+    return {
+      running: this.running, paused: this.paused, activeKind: this.activeKind,
+      scans: this.stats.scan, lastScanAt: this.lastScanAt,
+      lastPlanResultAt: this.lastPlanResultAt, lastPlanLatency: this.lastPlanLatency,
+      lastPlanGap: this.lastPlanGap, outcome: this.planOutcome,
+    };
+  }
 
-      this._checkReadyView();
+  _emitActivity() { this.on.onActivity?.(this.activity); }
 
-      const now = performance.now();
-
-      // 優先序：動態版型 > 光線 > 主路徑
-      // 前兩者比較少發生，讓它們先過，免得永遠排不到
-      if (this.needsCustom && now - this.lastCustomAt > CUSTOM_MS()) {
-        await this._runCustom();
-      } else if (!this.planPaused && now - this.lastLightSent > LIGHT_MS()) {
-        await this._runLight();
-      } else if (!this.planPaused || now - this.lastPlanSent >= READY_REVIEW_MS) {
-        await this._runPlan();
+  /** 固定時鐘只做取樣和排程，不等待模型；同時最多一個遠端請求。 */
+  _tick(runId) {
+    if (!this.running || runId !== this.runId) return;
+    try {
+      if (!this.paused) {
+        const now = performance.now();
+        if (now >= this.nextScanAt) {
+          this.nextScanAt = now + SCAN_MS();
+          const frame = sampleFrame(this.video);
+          if (frame) {
+            this.lastScanAt = now;
+            this.stats.scan++;
+            this._checkReadyView(frame);
+          }
+          this._emitActivity();
+        }
+        if (!this.dispatching && !this.busy) {
+          this.dispatching = true;
+          this._dispatch(now).catch((err) => {
+            console.warn("[planner] 排程失敗", err);
+          }).finally(() => { this.dispatching = false; });
+        }
       }
+    } catch (err) {
+      console.warn("[planner] 無法取樣畫面", err);
+    } finally {
+      if (this.running && runId === this.runId) {
+        this.timer = setTimeout(() => this._tick(runId), TICK_MS);
+      }
+    }
+  }
+
+  async _dispatch(now) {
+    if (this.needsCustom && now - this.lastCustomAt >= CUSTOM_MS()) {
+      await this._runCustom();
+      return;
+    }
+    const lightAge = now - this.lastLightSent;
+    const urgentConfirmation = !!this.getContext?.()?.confirming;
+    // 平常只用空檔做光線分析；模型很慢時偶爾讓光線更新，避免永久飢餓。
+    const lightOverdue = !this.planPaused && !urgentConfirmation &&
+      this.plansSinceLight >= 3 && lightAge >= LIGHT_MAX_DEFER_MS();
+    if (now >= this.nextPlanAt && !lightOverdue) {
+      await this._runPlan();
+    } else if (!this.planPaused && !urgentConfirmation && lightAge >= LIGHT_MS() &&
+        (lightOverdue || this.nextPlanAt - now > this.lastLightLatency + 100)) {
+      await this._runLight();
     }
   }
 
   // ── 主路徑 ──────────────────────────────────────
 
   async _runPlan() {
+    if (this.busy) return;
     // 靜止畫面也要送：候選共識與「對準了」都需要後續影格確認。
     const img = grabFrame(this.video);
-    if (!img) return;
+    if (!img) {
+      this.nextPlanAt = performance.now() + SCAN_MS();
+      return;
+    }
     const submittedFrame = sampleFrame(this.video);
 
     const ctx = this.getContext?.() ?? {};
     const sessionId = ctx.sessionId;
+    const runId = this.runId;
+    const startedAt = performance.now();
+    this.lastPlanGap = this.lastPlanSent === null ? null : startedAt - this.lastPlanSent;
+    this.lastPlanSent = startedAt;
+    this.nextPlanAt = startedAt + this.interval;
+    this.planOutcome = "analyzing";
     const plan = await this._send(
       requestPlan,
       {
@@ -197,23 +275,38 @@ export class RemotePlanner {
       "plan"
     );
 
-    this.lastPlanSent = performance.now();
-    if (!plan) return;
-
     // 換情境、鏡頭或按下重新分析後，忽略舊工作階段回來的慢回應。
+    if (runId !== this.runId) return;
     const latestSession = this.getContext?.()?.sessionId;
     if (sessionId !== undefined && latestSession !== sessionId) return;
+    this.lastPlanLatency = performance.now() - startedAt;
+    if (!plan) {
+      this.planOutcome = "error";
+      this.nextPlanAt = Math.max(this.nextPlanAt, startedAt + this.interval);
+      this._emitActivity();
+      return;
+    }
+    // 成功就恢復一秒目標，時間從開始推論算起，不再額外加 700ms。
+    this.nextPlanAt = startedAt + PLAN_MS();
+    this.plansSinceLight++;
 
-    // 模型分析的是較早的照片；移動中的舊 READY 不能套到現在的畫面。
-    if (plan.alignment === "ready" &&
-        frameDifference(submittedFrame, sampleFrame(this.video)) > VIEW_CHANGE_THRESHOLD) {
+    // 模型分析的是較早的照片；大幅移動後，舊 READY 和移動提示都不能套用。
+    if (frameDifference(submittedFrame, sampleFrame(this.video)) > VIEW_CHANGE_THRESHOLD) {
       this.stats.skip++;
+      this.planOutcome = "stale";
+      this._emitActivity();
       return;
     }
 
     // 主路徑只回報「需要動態版型」，實際生成走另一條路
     // 由前端共識控制器核准後才生成，不能讓單次 LLM 輸出繞過鎖定。
     this.needsCustom = this.on.onPlan?.(plan) === true;
+    // onPlan 可能觸發重新分析，不能把上一輪完成時間放到新工作階段。
+    if (sessionId === undefined || this.getContext?.()?.sessionId === sessionId) {
+      this.lastPlanResultAt = performance.now();
+      this.planOutcome = "updated";
+    }
+    this._emitActivity();
   }
 
   // ── 光線 ────────────────────────────────────────
@@ -231,6 +324,7 @@ export class RemotePlanner {
     // 少了這一步，模型只會分析整個場景——
     // 場地裡有一盞強燈就會壓過使用者真正要拍的東西。
     const ctx = this.getContext?.() ?? {};
+    const runId = this.runId;
     const exposure = measure(this.video, ctx.subjectBox ?? null);
     this.lastExposure = exposure;
 
@@ -240,8 +334,10 @@ export class RemotePlanner {
       "light"
     );
 
-    this.lastLightSent = performance.now();
+    if (runId !== this.runId) return;
     if (ctx.sessionId !== undefined && this.getContext?.()?.sessionId !== ctx.sessionId) return;
+    this.lastLightSent = performance.now();
+    this.plansSinceLight = 0;
     if (light) {
       // 結論沒變就不要洗版，只有變化時才印
       const sig = `${light.verdict}|${light.source}|${light.fill_from}`;
@@ -268,12 +364,14 @@ export class RemotePlanner {
 
     const ctx = this.getContext?.() ?? {};
     const sessionId = ctx.sessionId;
+    const runId = this.runId;
     const res = await this._send(
       requestCustom,
       { image: img, intent: ctx.intent ?? "product", current: ctx.current },
       "custom"
     );
 
+    if (runId !== this.runId) return;
     this.lastCustomAt = performance.now();
     this.needsCustom = false;      // 不管成功與否都清掉，避免卡住
     const latestSession = this.getContext?.()?.sessionId;
@@ -289,10 +387,12 @@ export class RemotePlanner {
     this.busy = true;
     const controller = new AbortController();
     this.controller = controller;
+    this.activeKind = kind;
     const runId = this.runId;
     this.stats[kind]++;
 
     const t0 = performance.now();
+    this._emitActivity();
     let res = null;
     try {
       res = await fn(payload, controller.signal);
@@ -300,17 +400,21 @@ export class RemotePlanner {
       if (!controller.signal.aborted) console.warn(`[planner] ${kind} 失敗`, err);
     } finally {
       this.lastLatency = Math.round(performance.now() - t0);
+      if (kind === "light") this.lastLightLatency = this.lastLatency;
       if (this.controller === controller) {
         this.busy = false;
         this.controller = null;
+        this.activeKind = null;
       }
     }
     if (controller.signal.aborted || runId !== this.runId) return null;
 
     if (res) {
       this.failures = 0;
+      this.failuresByKind[kind] = 0;
     } else {
       this.failures++;
+      this.failuresByKind[kind]++;
       if (this.failures === 1) {
         console.warn(`VLM 無回應（${kind}），畫面維持現狀`);
       }
@@ -318,5 +422,3 @@ export class RemotePlanner {
     return res;
   }
 }
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

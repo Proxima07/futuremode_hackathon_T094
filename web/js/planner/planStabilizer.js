@@ -6,7 +6,7 @@
  *
  *   searching  收集候選，兩次方向一致才定案
  *   guiding    版型與座標固定，只接受移動建議／完成判斷
- *   ready      多幀確認完成，只低頻複查，不重新設計構圖
+ *   ready      多幀確認完成，持續複查固定目標，不重新設計構圖
  *
  * 它不碰 DOM，也不呼叫 API，因此可以獨立測試。
  */
@@ -25,6 +25,7 @@ const DEFAULTS = Object.freeze({
   lostConfirmations: 2,
   guidanceConfirmations: 2,
   evidenceMaxAgeMs: 10000,
+  adviceRefreshMs: 2000,
 });
 
 const ACTIONS = new Set([
@@ -71,6 +72,7 @@ export class PlanStabilizer {
         options.guidanceConfirmations, DEFAULTS.guidanceConfirmations
       ),
       evidenceMaxAgeMs: positiveInt(options.evidenceMaxAgeMs, DEFAULTS.evidenceMaxAgeMs),
+      adviceRefreshMs: positiveInt(options.adviceRefreshMs, DEFAULTS.adviceRefreshMs),
     };
     this.options.readyWindow = Math.max(this.options.readyVotes, this.options.readyWindow);
     this._sessionId = 0;
@@ -109,6 +111,8 @@ export class PlanStabilizer {
     this._acceptedCue = "";
     this._lastEvidenceAt = 0;
     this._reviewMisses = 0;
+    this._acceptedAdvice = "";
+    this._adviceAt = 0;
     return this.snapshot;
   }
 
@@ -136,8 +140,7 @@ export class PlanStabilizer {
     if (!plan || typeof plan !== "object") {
       return { kind: "ignored", phase: this._phase };
     }
-    const maxAge = this._phase === PLAN_PHASE.READY
-      ? Math.max(60000, this.options.evidenceMaxAgeMs) : this.options.evidenceMaxAgeMs;
+    const maxAge = this.options.evidenceMaxAgeMs;
     if (this._lastEvidenceAt && now - this._lastEvidenceAt > maxAge) {
       this._readyHistory = [];
       this._lostStreak = 0;
@@ -152,7 +155,7 @@ export class PlanStabilizer {
     if (this._phase === PLAN_PHASE.READY) return this._reviewReady(plan);
     return this._phase === PLAN_PHASE.SEARCHING
       ? this._ingestCandidate(plan)
-      : this._ingestGuidance(plan);
+      : this._ingestGuidance(plan, now);
   }
 
   _ingestCandidate(plan) {
@@ -210,6 +213,8 @@ export class PlanStabilizer {
     if (plan?.alignment === "move" && action !== "none") {
       this._acceptedAction = action;
       this._acceptedCue = this._cue(plan);
+      this._acceptedAdvice = plan.advice ?? "";
+      this._adviceAt = this._lastEvidenceAt;
     }
   }
 
@@ -243,7 +248,7 @@ export class PlanStabilizer {
     return { kind: "review_pending", phase: this._phase };
   }
 
-  _ingestGuidance(plan) {
+  _ingestGuidance(plan, now) {
     let alignment = ["move", "ready", "lost"].includes(plan.alignment)
       ? plan.alignment
       : "move";
@@ -290,7 +295,15 @@ export class PlanStabilizer {
     if (cue === this._acceptedCue) {
       this._pendingAction = null;
       this._pendingActionCount = 0;
-      return { kind: "guidance", phase: this._phase, update: false };
+      // 同方向也可能從「往左」變成「再往左一點」。不能永遠卡在舊句子。
+      const advice = plan.advice ?? "";
+      const update = advice !== this._acceptedAdvice &&
+        now - this._adviceAt >= this.options.adviceRefreshMs;
+      if (update) {
+        this._acceptedAdvice = advice;
+        this._adviceAt = now;
+      }
+      return { kind: "guidance", phase: this._phase, update, plan };
     }
 
     if (cue === this._pendingAction) {
@@ -303,6 +316,8 @@ export class PlanStabilizer {
     if (this._pendingActionCount >= this.options.guidanceConfirmations) {
       this._acceptedAction = action;
       this._acceptedCue = cue;
+      this._acceptedAdvice = plan.advice ?? "";
+      this._adviceAt = now;
       this._pendingAction = null;
       this._pendingActionCount = 0;
       return {

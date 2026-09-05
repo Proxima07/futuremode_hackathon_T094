@@ -38,7 +38,7 @@ function app() {
       setPlanPaused(value) { this.planPaused = value; } };
     globalThis.harness = { state, el, stabilizer, badge, planner, overlay,
       onPlan, onCustom, onLight, getPlanContext, startAnalysis, resumeForView,
-      onIntentChange, onManualPick };
+      onIntentChange, onManualPick, updateAnalysisStatus };
   `, sandbox);
   return sandbox.harness;
 }
@@ -127,4 +127,20 @@ test("portrait intent restarts analysis and keeps its own layout catalog", () =>
   assert.equal(a.stabilizer.phase, "searching");
   assert.equal(a.getPlanContext().intent, "portrait");
   assert.ok(a.getPlanContext().layouts.includes("portrait_environment"));
+});
+
+test("activity distinguishes scanning from a real model response or failure", () => {
+  const a = app();
+  const activity = {running: true, paused: false, activeKind: null,
+    outcome: "waiting", lastPlanResultAt: null};
+  a.updateAnalysisStatus(activity);
+  assert.match(a.el.analysis.textContent, /等待首次判斷/);
+  a.updateAnalysisStatus({...activity, activeKind: "plan", outcome: "analyzing"});
+  assert.match(a.el.analysis.textContent, /正在判斷/);
+  a.updateAnalysisStatus({...activity, outcome: "updated", lastPlanResultAt: performance.now()});
+  assert.match(a.el.analysis.textContent, /最近判斷/);
+  a.updateAnalysisStatus({...activity, outcome: "error"});
+  assert.match(a.el.analysis.textContent, /暫無回應/);
+  a.updateAnalysisStatus({...activity, outcome: "stale"});
+  assert.match(a.el.analysis.textContent, /畫面已改變/);
 });

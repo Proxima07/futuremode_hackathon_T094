@@ -43,6 +43,7 @@ const el = {
   zoom: $("zoomControl"),
   shutter: $("shutter"),
   status: $("compositionStatus"),
+  analysis: $("analysisStatus"),
   reanalyze: $("reanalyzeBtn"),
   start: $("startBtn"),
   startScreen: $("startScreen"),
@@ -159,6 +160,7 @@ async function onCameraReady() {
 
   planner ??= new RemotePlanner(el.video, getPlanContext, {
     onPlan, onLight, onCustom, onViewChanged: resumeForView,
+    onActivity: updateAnalysisStatus,
   });
   startAnalysis();
   planner.start();
@@ -229,6 +231,36 @@ function syncPhase() {
   render();
 }
 
+/** 區分「有在取樣」與「模型真的回覆了」，不要把網路 log 當成完成判斷。 */
+function updateAnalysisStatus(activity) {
+  if (!el.analysis) return;
+  let text;
+  if (!activity.running) {
+    text = "等待相機啟動";
+  } else if (activity.paused) {
+    text = "已暫停，回到畫面後繼續判斷";
+  } else {
+    const age = Number.isFinite(activity.lastPlanResultAt)
+      ? `${Math.max(0, (performance.now() - activity.lastPlanResultAt) / 1000).toFixed(1)} 秒前`
+      : null;
+    if (activity.outcome === "error") {
+      text = "判斷暫無回應，正在重試";
+    } else if (activity.outcome === "stale") {
+      text = "畫面已改變，正在重新判斷";
+    } else if (activity.activeKind === "plan") {
+      text = age ? `判斷中・最近判斷 ${age}` : "正在判斷畫面…";
+    } else if (activity.activeKind === "custom") {
+      text = "正在建立構圖方案…";
+    } else if (age) {
+      text = `持續掃描中・最近判斷 ${age}`;
+    } else {
+      text = "掃描畫面中，等待首次判斷…";
+    }
+  }
+  el.analysis.textContent = text;
+  el.analysis.dataset.state = activity.outcome;
+}
+
 /** planner 每次送出前都會呼叫這個，取得最新的情境 */
 function getPlanContext() {
   // 主角那個位置的框。光線分析要用它算「主體 vs 背景」的亮度比，
@@ -242,6 +274,7 @@ function getPlanContext() {
     phase: stabilizer.phase === PLAN_PHASE.SEARCHING ? "searching" : "guiding",
     lastAction: stabilizer.lastAction,
     lastAdvice: state.advice,
+    confirming: ["candidate", "ready_pending", "guidance_pending", "lost_pending"].includes(state.progress),
     intent: state.intent.id,
     layouts: layoutsFor(state.intent).map((l) => l.id),
     subjectBox: hero?.box ?? null,
@@ -613,7 +646,9 @@ function updateDebug() {
     `環境 ${l ? `${l.env} [${l.verdict}]${l.issue !== "none" ? " " + l.issue : ""}` : "尚未判斷"}`,
     `光線 ${l ? `來源:${l.source} 補:${l.fill_from} 角度:${l.shoot_from}` : "—"}`,
     `  建議 ${l?.tip || "—"}`,
-    `VLM ${planner?.lastLatency}ms · ${age} · 失敗 ${planner?.failures}`,
+    `構圖延遲 ${Math.round(planner?.lastPlanLatency ?? 0)}ms · ${age} · 失敗 ${planner?.failuresByKind?.plan ?? 0}`,
+    `構圖起始間隔 ${planner?.lastPlanGap == null ? "—" : Math.round(planner.lastPlanGap) + "ms"}` +
+      ` · 目標 ${CONFIG.PLAN_INTERVAL_MS}ms · 取樣 ${planner?.stats.scan ?? 0} 次`,
     `呼叫 plan ${planner?.stats.plan} · light ${planner?.stats.light}` +
       ` · custom ${planner?.stats.custom} · 略過 ${planner?.stats.skip}`,
     `相機 ${camera.isAlive() ? "正常" : "已中斷"} · ${devices.count()} 顆`,

@@ -104,12 +104,33 @@ test("view change preserves target but clears votes, reanalysis clears target", 
   assert.equal(s.lockedPlan, null);
 });
 
-test("low-frequency READY reviews need two misses and retain fixed targets", () => {
+test("one-second READY reviews need two misses and retain fixed targets", () => {
   const s = lock();
   s.ingest(ready(), 1000); s.ingest(ready(), 2000);
-  assert.equal(s.ingest(plan(), 15000).kind, "review_pending");
-  assert.equal(s.ingest(plan(), 28000).kind, "resumed");
+  assert.equal(s.ingest(plan(), 3000).kind, "review_pending");
+  assert.equal(s.ingest(plan(), 4000).kind, "resumed");
   assert.equal(s.lockedPlan.layout, "rule_thirds");
+});
+
+test("same direction can refresh remaining movement without changing the target", () => {
+  const s = new PlanStabilizer();
+  s.ingest(plan({advice: "杯標往左"}), 1000);
+  s.ingest(plan({advice: "杯標往左"}), 2000);
+  const target = s.lockedPlan;
+  const closer = plan({advice: "杯標再往左一點"});
+  assert.equal(s.ingest(closer, 3000).update, false);
+  assert.equal(s.ingest(closer, 4000).update, true);
+  assert.equal(s.lastAction, "move_left");
+  assert.equal(s.lockedPlan, target);
+  assert.equal(s.ingest(ready(), 5000).kind, "ready_pending");
+  assert.equal(s.ingest(ready(), 6000).kind, "ready");
+});
+
+test("expired READY review evidence cannot be combined after a long interruption", () => {
+  const s = lock();
+  s.ingest(ready(), 1000); s.ingest(ready(), 2000);
+  s.ingest(plan(), 3000);
+  assert.equal(s.ingest(plan(), 15000).kind, "review_pending");
 });
 
 test("ready window is never smaller than required votes; manual lock skips searching", () => {

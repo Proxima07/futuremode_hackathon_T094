@@ -7,7 +7,7 @@
 
 export const CONFIG = {
   /** 版本戳記。console 會印出來，用來確認載入的不是快取的舊檔 */
-  BUILD: "v0.30",
+  BUILD: "v0.31",
 
   /** 快層迴圈的頻率。10 次/秒足夠流暢，又不會把手機電力燒光 */
   FPS: 10,
@@ -16,14 +16,13 @@ export const CONFIG = {
   IMAGE_MAX_EDGE: 512,
 
   /**
-   * 慢層的間隔。
-   *
-   * 注意：這是「收到上一個回應之後」再等多久，
-   * 不是固定週期。所以實際頻率是「延遲 + 這個值」。
-   * 後端 300ms 時大約每秒一次，後端變慢時自動放慢，
-   * 請求永遠不會堆積。
+   * 構圖請求的目標起始間隔，SEARCHING / GUIDING / READY 都適用。
+   * 從送出時計時；模型若超過一秒才回，立即接續最新畫面，不排隊補送。
    */
-  PLAN_INTERVAL_MS: 700,
+  PLAN_INTERVAL_MS: 1000,
+
+  /** 本機畫面取樣獨立於網路，模型正在推論時仍每秒檢查一次。 */
+  SCAN_INTERVAL_MS: 1000,
 
   /**
    * 光線分析的間隔。
@@ -31,6 +30,8 @@ export const CONFIG = {
    * 拉長它可以大幅減少 VLM 的負擔。
    */
   LIGHT_INTERVAL_MS: 6000,
+  /** 光線優先填入構圖空檔；忙碌約 30 秒後安排更新，關鍵確認期間除外。 */
+  LIGHT_MAX_DEFER_MS: 30000,
 
   /**
    * 動態版型的最短重生間隔。
@@ -56,6 +57,8 @@ export const CONFIG = {
     guidanceConfirmations: 2,
     /** 網路中斷／很慢時，過期證據不能和新影格湊票 */
     evidenceMaxAgeMs: 10000,
+    /** 同方向的提示文字也可以更新，但最多每兩秒一次，避免文字閃動。 */
+    adviceRefreshMs: 2000,
   },
 
   /**
