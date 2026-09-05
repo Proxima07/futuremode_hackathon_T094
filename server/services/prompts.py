@@ -29,8 +29,7 @@ INTENT_GUIDE = {
 - 側光或斜逆光最好看，正面直打光會讓食物扁平
 - 俯拍適合平面擺盤（披薩、丼飯、火鍋）
 - 斜 45 度適合有高度的（漢堡、蛋糕、拉麵）
-- 餐具配菜可以陪襯，但不要搶主角
-- 手機、鑰匙、包裝袋要移走""",
+- 餐具、醬料與配菜可以陪襯，但不要搶主角""",
 
     "product": """情境：一般商品情境照。
 - 主商品要明確，其他都是陪襯
@@ -40,6 +39,15 @@ INTENT_GUIDE = {
     "person": """情境：人物與物品的合照。
 - 人不是主角，商品才是""",
 }
+
+
+# 只加入版型／物件規劃，不送進 light prompt，避免光線路徑浪費 token。
+FOOD_OBJECT_GUIDE = """【餐點物件關係】
+- 先把餐盤、紙盒、托盤、食物籃及其內容視為一個完整擺盤組
+- 承托、盛裝、包覆或直接接觸食物的東西都屬於擺盤：餐盤、碗、托盤、醬料杯、吸油紙、烘焙紙、印刷墊紙、漢堡紙不得當成雜物
+- 墊紙即使印有英文或報紙版面，只要位於食物下方，就是餐飲用墊紙，不是應移除的報紙
+- 只有與餐點完全無關、沒有承托或盛裝食物的手機、鑰匙、垃圾、空包裝才建議移走
+- 無法確定是擺盤用品還是雜物時，一律保留，不要放進 remove"""
 
 
 # ── 主路徑：每次都跑，所以要盡量短 ────────────────────
@@ -72,7 +80,24 @@ adjust 的四個參數（對整組框做）：
 人、身體部位、家具、牆壁不算可拍攝物品。
 沒有可拍攝物品時 placements 給空陣列。
 
-remove 放該移出畫面的雜物：線材、包裝、垃圾、無關的東西。
+## remove：先判斷功能關係，再決定是否移除
+
+只能放「確定與拍攝主體無關，而且可獨立拿走」的雜物，
+例如無關線材、手機、鑰匙、垃圾或空包裝。
+
+以下物件不得放進 remove：
+- 位於主體下方、內部或周圍，用來承托、盛裝、包覆、保護主體的物件
+- 餐盤、碗、托盤、食物籃、醬料杯、餐具、吸油紙、烘焙紙、印刷墊紙
+- 商品原廠盒、配件或刻意安排的拍攝道具
+
+食物放在印有報紙文字的紙張上時，那是「印刷墊紙／吸油紙」，
+屬於餐點擺盤，不是報紙，不得要求移除。
+
+如果無法確定某個東西是否為擺盤或主體的一部分，保留它，
+不要猜測、不要放進 remove。寧可少移除，也不要破壞完整擺盤。
+
+例：炸物放在印有英文的吸油紙上，旁邊有醬料杯：
+placements 應把炸物餐盤視為主體，醬料杯可作陪襯，remove 應為空陣列。
 
 ## 輸出
 
@@ -223,6 +248,8 @@ LISTING_SYSTEM = """你是商品文案助手。看照片寫出可以直接貼上
 
 def plan_text(intent: str, layouts: list[str], current: dict | None) -> str:
     parts = [INTENT_GUIDE.get(intent, INTENT_GUIDE["product"])]
+    if intent == "food":
+        parts.append(FOOD_OBJECT_GUIDE)
     parts.append(f"\n可用版型：{sorted(layouts)}")
     if current:
         slots = ", ".join(
@@ -321,6 +348,8 @@ def light_text(intent: str, exposure: dict | None) -> str:
 
 def custom_text(intent: str, current: dict | None) -> str:
     parts = [INTENT_GUIDE.get(intent, INTENT_GUIDE["product"])]
+    if intent == "food":
+        parts.append(FOOD_OBJECT_GUIDE)
     if current:
         parts.append(
             f"\n目前用的是「{current.get('name', '')}」，"
