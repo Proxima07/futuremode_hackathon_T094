@@ -17,21 +17,30 @@ export const INTENTS = [
     name: "美食",
     icon: "🍜",
     hint: "拍出讓人想吃的餐點照",
-    layouts: ["overhead", "angle45", "single", "detail", "flatlay"],
+    layouts: [
+      "overhead", "angle45", "triangle", "golden_spiral", "rule_thirds",
+      "diagonal", "golden_grid", "single", "detail", "flatlay",
+    ],
   },
   {
     id: "secondhand_listing",
     name: "二手商品",
     icon: "📦",
     hint: "拍出賣得掉的商品照",
-    layouts: ["single", "hero_props", "flatlay", "detail"],
+    layouts: [
+      "single", "rule_thirds", "golden_grid", "diagonal",
+      "hero_props", "golden_spiral", "flatlay", "detail",
+    ],
   },
   {
     id: "product",
     name: "商品情境",
     icon: "✨",
     hint: "有質感的情境照",
-    layouts: ["hero_props", "single", "flatlay", "angle45"],
+    layouts: [
+      "golden_spiral", "rule_thirds", "golden_grid", "diagonal", "triangle",
+      "hero_props", "single", "flatlay", "angle45",
+    ],
   },
 ];
 

@@ -149,6 +149,16 @@ export class OverlayCanvas {
     // depth 小的先畫，才會被前面的疊在上面
     const ordered = [...layout.slots].sort((a, b) => a.depth - b.depth);
 
+    // 三分法、黃金螺旋等版型使用構圖線與視覺錨點，
+    // 不畫暗化遮罩與大型物件框，避免反過來破壞原本已經好看的場景。
+    if (layout.guideOnly && layout.composition) {
+      this._drawCompositionGuide(layout.composition);
+      for (const slot of ordered) {
+        this._drawAnchor(slot, items[slot.id] ?? null, !!aligned[slot.id]);
+      }
+      return;
+    }
+
     // 沒東西可放的 optional 位置不挖洞，避免畫面破碎
     const holes = ordered.filter((s) => !s.optional || items[s.id]);
     if (mask) this._drawMask(holes.length ? holes : ordered);
@@ -164,6 +174,121 @@ export class OverlayCanvas {
       const arrow = arrows[slot.id];
       if (arrow && !aligned[slot.id]) this._drawArrow(slot, arrow);
     }
+  }
+
+  /** 繪製三分法、黃金比例、螺旋、三角形或對角線。 */
+  _drawCompositionGuide(composition) {
+    const type = composition.type;
+    const transform = composition.transform ?? {};
+    const ctx = this.ctx;
+
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.shadowColor = "rgba(0,0,0,.65)";
+    ctx.shadowBlur = 5;
+
+    if (type === "thirds" || type === "golden_grid") {
+      const cuts = type === "thirds" ? [1 / 3, 2 / 3] : [0.382, 0.618];
+      for (const v of cuts) {
+        this._guideLine([[v, 0.04], [v, 0.96]], transform);
+        this._guideLine([[0.04, v], [0.96, v]], transform);
+      }
+    } else if (type === "triangle") {
+      const top = [0.50, 0.14];
+      const left = [0.08, 0.80];
+      const right = [0.92, 0.80];
+      this._guideLine([top, left, right, top], transform, true);
+    } else if (type === "diagonal") {
+      this._guideLine([[0.05, 0.12], [0.95, 0.82]], transform, true);
+      // 一條較淡的平行線，讓長條主體比較容易順著動線擺放。
+      this._guideLine([[0.05, 0.28], [0.82, 0.88]], transform, false, 0.42);
+    } else if (type === "golden_spiral") {
+      // 黃金比例的輔助分割線，讓螺旋眼的位置更容易辨識。
+      this._guideLine([[0.618, 0.08], [0.618, 0.92]], transform, false, 0.38);
+      this._guideLine([[0.08, 0.382], [0.92, 0.382]], transform, false, 0.38);
+
+      const phi = (1 + Math.sqrt(5)) / 2;
+      const growth = Math.log(phi) / (Math.PI / 2);
+      const points = [];
+      const end = Math.PI * 4;
+      for (let i = 0; i <= 180; i++) {
+        const angle = end * i / 180;
+        const radius = 0.008 * Math.exp(growth * angle);
+        points.push([
+          0.618 + Math.cos(angle) * radius,
+          0.382 + Math.sin(angle) * radius,
+        ]);
+      }
+      ctx.strokeStyle = "rgba(251,191,36,.92)";
+      ctx.lineWidth = 2.4;
+      this._guideLine(points, transform, true, 0.92, false);
+    }
+
+    ctx.restore();
+  }
+
+  /** 把正規化座標套用 LLM 的受約束調整，再轉成畫布像素。 */
+  _guidePoint([px, py], transform = {}) {
+    const {
+      mirror = false, scale = 1, shift_x = 0, shift_y = 0,
+    } = transform;
+    let x = mirror ? 1 - px : px;
+    let y = py;
+    x = 0.5 + (x - 0.5) * scale + shift_x;
+    y = 0.5 + (y - 0.5) * scale + shift_y;
+    return [x * this.w, y * this.h];
+  }
+
+  _guideLine(points, transform, strong = false, alpha = 0.72,
+             setDefaultStyle = true) {
+    if (!points.length) return;
+    const ctx = this.ctx;
+    if (setDefaultStyle) {
+      ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+      ctx.lineWidth = strong ? 2.2 : 1.35;
+    }
+    ctx.beginPath();
+    const [x0, y0] = this._guidePoint(points[0], transform);
+    ctx.moveTo(x0, y0);
+    for (let i = 1; i < points.length; i++) {
+      const [x, y] = this._guidePoint(points[i], transform);
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  /** 構圖引導版型只畫小型交點，不畫限制物件尺寸的大框。 */
+  _drawAnchor(slot, item, isAligned) {
+    const [nx, ny] = slot.anchor ?? center(slot.box);
+    const x = nx * this.w;
+    const y = ny * this.h;
+    const color = isAligned
+      ? COLORS.aligned
+      : COLORS[slot.prefer] ?? COLORS.any;
+    const radius = slot.prefer === "hero" ? 9 : 7;
+    const ctx = this.ctx;
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = "rgba(0,0,0,.36)";
+    ctx.lineWidth = isAligned ? 4 : 2.5;
+    ctx.shadowColor = "rgba(0,0,0,.65)";
+    ctx.shadowBlur = 6;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x - radius - 6, y);
+    ctx.lineTo(x + radius + 6, y);
+    ctx.moveTo(x, y - radius - 6);
+    ctx.lineTo(x, y + radius + 6);
+    ctx.stroke();
+    ctx.restore();
+
+    const text = item ?? slot.label;
+    if (text) this._label(text, x - 44, y - 16, 88, 32, color, !item);
   }
 
   /**

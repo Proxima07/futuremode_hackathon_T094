@@ -45,6 +45,10 @@ export const PREFER = {
 /** 座標的索引，避免程式裡出現看不懂的 box[2] */
 export const X1 = 0, Y1 = 1, X2 = 2, Y2 = 3;
 
+const GUIDE_TYPES = new Set([
+  "thirds", "golden_grid", "golden_spiral", "triangle", "diagonal",
+]);
+
 /**
  * 驗證一個版型定義是否合法。
  * 開發期用，抓自己手寫座標時的低級錯誤。
@@ -61,6 +65,10 @@ export function validateLayout(layout) {
   if (!Array.isArray(layout?.slots) || layout.slots.length === 0) {
     push("slots 是空的");
     return errors;
+  }
+
+  if (layout.guideOnly && !GUIDE_TYPES.has(layout.composition?.type)) {
+    push("構圖引導版型缺少有效的 composition.type");
   }
 
   const seen = new Set();
@@ -90,6 +98,14 @@ export function validateLayout(layout) {
     if (area > 0.75) push(`${s.id} 的框太大（面積 ${area.toFixed(3)}）`);
 
     if (typeof s.depth !== "number") push(`${s.id} 缺少 depth`);
+
+    if (layout.guideOnly) {
+      const a = s.anchor;
+      if (!Array.isArray(a) || a.length !== 2 ||
+          a.some((v) => typeof v !== "number" || v < 0 || v > 1)) {
+        push(`${s.id} 缺少有效的 anchor [x,y]`);
+      }
+    }
   }
 
   if (heroCount === 0) push("沒有任何 slot 標記為 hero");

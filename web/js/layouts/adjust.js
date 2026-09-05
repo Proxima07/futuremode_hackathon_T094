@@ -33,6 +33,17 @@ export function applyAdjust(layout, adjust) {
     return layout;
   }
 
+  const transformPoint = ([px, py]) => {
+    let x = mirror ? 1 - px : px;
+    let y = py;
+    x = 0.5 + (x - 0.5) * scale + shift_x;
+    y = 0.5 + (y - 0.5) * scale + shift_y;
+    return [
+      clamp(x, SAFE.left, SAFE.right),
+      clamp(y, SAFE.top, SAFE.bottom),
+    ];
+  };
+
   const slots = layout.slots.map((s) => {
     let [x1, y1, x2, y2] = s.box;
 
@@ -52,10 +63,28 @@ export function applyAdjust(layout, adjust) {
     x1 += shift_x; x2 += shift_x;
     y1 += shift_y; y2 += shift_y;
 
-    return { ...s, box: fitSafe([x1, y1, x2, y2]) };
+    return {
+      ...s,
+      box: fitSafe([x1, y1, x2, y2]),
+      ...(s.anchor ? { anchor: transformPoint(s.anchor) } : {}),
+    };
   });
 
-  return { ...layout, slots, adjusted: true };
+  // 構圖線與 slot 使用同一組轉換，確保 LLM 做鏡射、縮放或平移時，
+  // 畫面上的交點／螺旋與實際指派位置不會分離。
+  const composition = layout.composition
+    ? {
+        ...layout.composition,
+        transform: { mirror, scale, shift_x, shift_y },
+      }
+    : undefined;
+
+  return {
+    ...layout,
+    slots,
+    ...(composition ? { composition } : {}),
+    adjusted: true,
+  };
 }
 
 /**

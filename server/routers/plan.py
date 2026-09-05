@@ -33,6 +33,11 @@ LAYOUT_SLOTS = {
     "detail": ["detail"],
     "overhead": ["main", "s1", "s2"],
     "angle45": ["back", "main", "front"],
+    "rule_thirds": ["main", "secondary"],
+    "golden_grid": ["main", "secondary"],
+    "golden_spiral": ["main", "flow"],
+    "triangle": ["main", "left", "right"],
+    "diagonal": ["main", "secondary"],
 }
 
 

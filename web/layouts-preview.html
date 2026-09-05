@@ -63,6 +63,26 @@
                 border-color: var(--any); }
   .slot.optional { border-style: dashed; }
 
+  .guide-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .guide-svg .line {
+    fill: none; stroke: rgba(255,255,255,.72); stroke-width: 1.2;
+    vector-effect: non-scaling-stroke;
+  }
+  .guide-svg .soft { stroke: rgba(255,255,255,.38); }
+  .guide-svg .gold { stroke: var(--short); stroke-width: 2; }
+  .guide-anchor {
+    position: absolute; width: 15px; height: 15px;
+    transform: translate(-50%, -50%);
+    border: 2px solid var(--hero); border-radius: 50%;
+    background: rgba(0,0,0,.45); box-shadow: 0 1px 5px #000;
+  }
+  .guide-anchor span {
+    position: absolute; left: 50%; top: 19px;
+    transform: translateX(-50%); white-space: nowrap;
+    color: var(--text); font-size: 11px; font-weight: 600;
+    background: rgba(0,0,0,.68); border-radius: 999px; padding: 2px 7px;
+  }
+
   .legend { display: flex; gap: 16px; flex-wrap: wrap;
             font-size: 13px; color: var(--dim); margin-bottom: 22px; }
   .legend i { display: inline-block; width: 11px; height: 11px;
@@ -96,7 +116,7 @@
 
 <h1>版型預覽</h1>
 <p class="sub">
-  直接看四個版型的座標長什麼樣，並測試規則指派的結果。<br>
+  直接看所有物件框與構圖線版型，並測試規則指派的結果。<br>
   改了 <code>definitions/*.js</code> 之後重整這頁就會更新，不用等相機那條線做完。
 </p>
 
@@ -140,8 +160,73 @@ import { planByRule } from "./js/layouts/assign.js";
 import { validateLayout } from "./js/layouts/schema.js";
 
 // ── 畫版型 ────────────────────────────────────────
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function addPath(svg, d, cls = "line") {
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("d", d);
+  path.setAttribute("class", cls);
+  svg.appendChild(path);
+}
+
+function drawComposition(stage, layout) {
+  const type = layout.composition?.type;
+  if (!type) return;
+
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("class", "guide-svg");
+
+  if (type === "thirds" || type === "golden_grid") {
+    const cuts = type === "thirds" ? [100 / 3, 200 / 3] : [38.2, 61.8];
+    for (const v of cuts) {
+      addPath(svg, `M ${v} 4 L ${v} 96`);
+      addPath(svg, `M 4 ${v} L 96 ${v}`);
+    }
+  } else if (type === "triangle") {
+    addPath(svg, "M 50 14 L 8 80 L 92 80 Z");
+  } else if (type === "diagonal") {
+    addPath(svg, "M 5 12 L 95 82");
+    addPath(svg, "M 5 28 L 82 88", "line soft");
+  } else if (type === "golden_spiral") {
+    addPath(svg, "M 61.8 8 L 61.8 92", "line soft");
+    addPath(svg, "M 8 38.2 L 92 38.2", "line soft");
+    const phi = (1 + Math.sqrt(5)) / 2;
+    const growth = Math.log(phi) / (Math.PI / 2);
+    const points = [];
+    for (let i = 0; i <= 180; i++) {
+      const angle = Math.PI * 4 * i / 180;
+      const radius = 0.8 * Math.exp(growth * angle);
+      points.push([
+        61.8 + Math.cos(angle) * radius,
+        38.2 + Math.sin(angle) * radius,
+      ]);
+    }
+    addPath(svg, points.map((p, i) =>
+      `${i ? "L" : "M"} ${p[0].toFixed(2)} ${p[1].toFixed(2)}`
+    ).join(" "), "line gold");
+  }
+  stage.appendChild(svg);
+}
+
 function drawSlots(stage, layout, assignMap = null) {
   stage.innerHTML = "";
+  drawComposition(stage, layout);
+
+  if (layout.guideOnly) {
+    for (const s of layout.slots) {
+      const el = document.createElement("div");
+      el.className = "guide-anchor";
+      el.style.left = s.anchor[0] * 100 + "%";
+      el.style.top = s.anchor[1] * 100 + "%";
+      const who = assignMap ? assignMap[s.id] : null;
+      el.innerHTML = `<span>${who || s.label}</span>`;
+      stage.appendChild(el);
+    }
+    return;
+  }
+
   // depth 小的先畫，才會被後面的疊在上面
   const ordered = [...layout.slots].sort((a, b) => a.depth - b.depth);
   for (const s of ordered) {

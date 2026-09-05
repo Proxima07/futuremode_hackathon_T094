@@ -50,6 +50,23 @@ FOOD_OBJECT_GUIDE = """【餐點物件關係】
 - 無法確定是擺盤用品還是雜物時，一律保留，不要放進 remove"""
 
 
+# 版型的語意目錄。只有 id 沒有用途時，模型很容易永遠選熟悉的 single。
+# plan_text 只送本次情境允許的項目，避免增加不必要的輸入 token。
+LAYOUT_GUIDE = {
+    "single": "單一物件置中，需要明確的尺寸與位置框",
+    "hero_props": "主角加二至三個配件，需要前後高低層次",
+    "flatlay": "三至五件高度相近的物品，從正上方整齊平拍",
+    "detail": "瑕疵、材質、文字或食物細節的近距離特寫",
+    "overhead": "餐點或平面物件的正上方俯拍",
+    "angle45": "有高度的餐點或商品，從斜上方呈現立體感",
+    "rule_thirds": "三分法線與交點；單一主體、環境感、需要自然留白",
+    "golden_grid": "黃金分割線；質感商品、非對稱留白、安靜穩定的畫面",
+    "golden_spiral": "黃金螺旋；主體明確且周圍元素能形成彎曲視線流",
+    "triangle": "三角構圖；一個主體加一至兩個陪襯，形成穩定集中感",
+    "diagonal": "對角線構圖；長條、斜放或需要方向感與動態感的主體",
+}
+
+
 # ── 主路徑：每次都跑，所以要盡量短 ────────────────────
 
 PLAN_SYSTEM = """你是攝影構圖的即時助手。
@@ -70,9 +87,32 @@ adjust 的四個參數（對整組框做）：
   shift_x  -0.08 ~ 0.08
   shift_y  -0.08 ~ 0.08
 
+## 如何選擇版型
+
+版型分成兩類：
+
+1. 物件框版型：single、hero_props、flatlay、detail、overhead、angle45
+   適合物件明顯擺錯位置，需要使用者照著框搬動或調整大小。
+
+2. 構圖線版型：rule_thirds、golden_grid、golden_spiral、triangle、diagonal
+   適合場景本來就接近完成、不需要硬分前後高低，只要用分割線、交點、
+   螺旋或幾何動線改善視覺重心。
+
+不要因為物件有兩三樣就一律選 hero_props。
+- 單一主體加大量環境或留白：優先 rule_thirds 或 golden_grid
+- 主體周圍有自然彎曲動線：優先 golden_spiral
+- 一個主體加一至兩個陪襯，整體可形成穩定三角形：優先 triangle
+- 長條、斜放或具有明顯方向：優先 diagonal
+- 真的需要指定每樣物件位置與前後遮擋時，才選物件框版型
+
+構圖線版型同樣可以回傳 adjust；mirror 可改變構圖方向，scale 與
+shift_x / shift_y 可讓引導線和交點貼近現場主體。
+
 ## placements
 
-先決定主角放 hero 那個位置，剩下依高低排：高的往後、矮的往前。
+先決定主角放 hero 那個位置。
+只有 slot 明確寫著「高的放後面／小的放前面」時才依高低排列；
+構圖線版型應依交點、螺旋與幾何動線分配，不要強迫物件形成前後高低。
 
 物品名稱用二到五個字的繁體中文，要讓人一看就知道是哪個東西。
 好：白色耳機、日式豬排丼　壞：物件A、食物
@@ -250,7 +290,11 @@ def plan_text(intent: str, layouts: list[str], current: dict | None) -> str:
     parts = [INTENT_GUIDE.get(intent, INTENT_GUIDE["product"])]
     if intent == "food":
         parts.append(FOOD_OBJECT_GUIDE)
-    parts.append(f"\n可用版型：{sorted(layouts)}")
+    catalog = "\n".join(
+        f"- {layout_id}: {LAYOUT_GUIDE.get(layout_id, '依位置標籤判斷')}"
+        for layout_id in sorted(layouts)
+    )
+    parts.append(f"\n可用版型與用途：\n{catalog}")
     if current:
         slots = ", ".join(
             f"{s['id']}({s.get('label', '')})"

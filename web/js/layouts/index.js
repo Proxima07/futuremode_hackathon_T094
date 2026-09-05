@@ -15,10 +15,18 @@ import { flatlay } from "./definitions/flatlay.js";
 import { detail } from "./definitions/detail.js";
 import { overhead } from "./definitions/overhead.js";
 import { angle45 } from "./definitions/angle45.js";
+import { ruleThirds } from "./definitions/ruleThirds.js";
+import { goldenGrid } from "./definitions/goldenGrid.js";
+import { goldenSpiral } from "./definitions/goldenSpiral.js";
+import { triangle } from "./definitions/triangle.js";
+import { diagonal } from "./definitions/diagonal.js";
 import { validateLayout } from "./schema.js";
 
 /** 所有版型，順序不重要 */
-export const ALL = [single, heroProps, flatlay, detail, overhead, angle45];
+export const ALL = [
+  single, heroProps, flatlay, detail, overhead, angle45,
+  ruleThirds, goldenGrid, goldenSpiral, triangle, diagonal,
+];
 
 /** 依情境過濾出可用的版型，順序照情境的偏好 */
 export function layoutsFor(intent) {
