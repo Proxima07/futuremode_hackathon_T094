@@ -89,16 +89,38 @@ export async function start(video, onLost, deviceId = null) {
       ? { deviceId: { exact: deviceId } }
       : { facingMode: "environment" };
 
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        ...videoConstraints,
-        // 不要求太高。送給 VLM 的只有 512px，
-        // 拍照存檔用 960 也足夠，而解析度越高影像解碼越吃資源。
-        width: { ideal: 960 },
-        height: { ideal: 1280 },
-      },
-    });
+    // Chrome 只有在 getUserMedia 階段明確請求 PTZ/Zoom 權限後，
+    // 才會把 zoom 放進 track.getCapabilities()。上一版少了這一步，
+    // 導致明明已經有縮放介面，卻因判定為 unsupported 而被隱藏。
+    const supported = navigator.mediaDevices.getSupportedConstraints?.() ?? {};
+    const zoomConstraint = supported.zoom ? { zoom: true } : {};
+
+    const baseVideoConstraints = {
+      ...videoConstraints,
+      // 不要求太高。送給 VLM 的只有 512px，
+      // 拍照存檔用 960 也足夠，而解析度越高影像解碼越吃資源。
+      width: { ideal: 960 },
+      height: { ideal: 1280 },
+    };
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { ...baseVideoConstraints, ...zoomConstraint },
+      });
+    } catch (err) {
+      // 瀏覽器支援 zoom 不代表使用者選到的每一顆鏡頭都支援。
+      // 例如某些前鏡頭會因 zoom:true 回 OverconstrainedError；
+      // 這時退回一般相機，不能讓整個拍攝功能一起失效。
+      if (zoomConstraint.zoom && err?.name === "OverconstrainedError") {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: baseVideoConstraints,
+        });
+      } else {
+        throw err;
+      }
+    }
   } catch (err) {
     throw toCameraError(err);
   }
