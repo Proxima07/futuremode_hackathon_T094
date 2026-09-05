@@ -130,6 +130,48 @@ html, body {
   background: rgba(255, 255, 255, .14);
 }
 
+/* ── 相機縮放 ────────────────────────────────── */
+.zoom-control {
+  position: absolute;
+  top: calc(max(14px, env(safe-area-inset-top)) + 54px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: min(78vw, 330px);
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: rgba(20, 20, 24, .82);
+  user-select: none;
+}
+.zoom-control.hidden { display: none; }
+.zoom-control button {
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .13);
+  color: #f2f2f4;
+  font-size: 22px;
+  line-height: 1;
+}
+.zoom-control button:disabled { opacity: .35; }
+.zoom-control input[type="range"] {
+  min-width: 0;
+  flex: 1 1 auto;
+  accent-color: #f2f2f4;
+}
+.zoom-control span {
+  flex: 0 0 42px;
+  color: #f2f2f4;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 /* ── 提示條 ────────────────────────────────── */
 #hint {
   position: absolute;

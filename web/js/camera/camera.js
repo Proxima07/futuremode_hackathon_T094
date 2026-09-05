@@ -42,6 +42,11 @@ let recoverAttempts = 0;
 /** @type {string | null} 目前使用的鏡頭 deviceId */
 let currentDeviceId = null;
 
+/** 目前影像軌。縮放控制與除錯會共用。 */
+function currentTrack() {
+  return stream?.getVideoTracks?.()[0] ?? null;
+}
+
 /** 最近一次看門狗的觀測值，除錯面板會顯示 */
 export const health = {
   readyState: 0,
@@ -98,6 +103,13 @@ export async function start(video, onLost, deviceId = null) {
     throw toCameraError(err);
   }
 
+  // 某些 Android 手機會沿用相機 App 或上一條串流的縮放倍率。
+  // SnapFit 一開始應該先給使用者最廣的視野，所以主動回到此鏡頭
+  // 所允許的最小倍率。失敗不影響相機啟動，只代表瀏覽器不開放縮放。
+  await resetZoom().catch((err) => {
+    console.info("無法重設相機縮放：", err?.message ?? err);
+  });
+
   // 監聽串流中斷
   for (const track of stream.getVideoTracks()) {
     track.addEventListener("ended", handleTrackEnded);
@@ -138,6 +150,64 @@ export async function switchTo(video, deviceId, onLost) {
 /** 目前正在用哪一顆鏡頭 */
 export function currentDevice() {
   return currentDeviceId;
+}
+
+// ── 相機縮放 ──────────────────────────────────────
+
+/**
+ * 取得目前鏡頭可用的縮放範圍。
+ *
+ * Media Capture API 並不是每個手機瀏覽器都會公開 zoom；沒有公開時
+ * 回傳 supported:false，介面會自動隱藏，避免出現一個按了沒反應的控制。
+ */
+export function zoomInfo() {
+  const track = currentTrack();
+  const caps = track?.getCapabilities?.() ?? {};
+  const settings = track?.getSettings?.() ?? {};
+  const z = caps.zoom;
+
+  if (!z || !Number.isFinite(z.min) || !Number.isFinite(z.max) || z.max <= z.min) {
+    return { supported: false, min: 1, max: 1, step: 0.1, value: 1 };
+  }
+
+  const min = z.min;
+  const max = z.max;
+  const step = Number.isFinite(z.step) && z.step > 0 ? z.step : 0.1;
+  const current = Number.isFinite(settings.zoom) ? settings.zoom : min;
+  const value = Math.max(min, Math.min(max, current));
+  return { supported: true, min, max, step, value };
+}
+
+/** 套用縮放倍率，成功後回傳瀏覽器實際採用的狀態。 */
+export async function setZoom(value) {
+  const track = currentTrack();
+  const info = zoomInfo();
+  if (!track || !info.supported) {
+    throw new CameraError("zoom_unsupported", "這個瀏覽器沒有開放相機縮放控制。");
+  }
+
+  const target = Math.max(info.min, Math.min(info.max, Number(value)));
+  if (!Number.isFinite(target)) return info;
+
+  // Chromium 主要接受 advanced 寫法；部分 WebKit 版本接受頂層寫法。
+  // 先走標準範例，再用另一種形式保底。
+  try {
+    await track.applyConstraints({ advanced: [{ zoom: target }] });
+  } catch (firstError) {
+    try {
+      await track.applyConstraints({ zoom: target });
+    } catch {
+      throw firstError;
+    }
+  }
+  return zoomInfo();
+}
+
+/** 切到這顆鏡頭能提供的最廣視野。 */
+export async function resetZoom() {
+  const info = zoomInfo();
+  if (!info.supported) return info;
+  return setZoom(info.min);
 }
 
 /**

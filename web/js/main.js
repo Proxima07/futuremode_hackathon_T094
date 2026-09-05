@@ -15,10 +15,11 @@ import * as camera from "./camera/camera.js";
 import * as devices from "./camera/devices.js";
 import { warmup, resetSceneMemory } from "./lib/api.js";
 import { RemotePlanner } from "./planner/remotePlanner.js";
-import { summarize } from "./vision/exposure.js";
+import { summarize, visibleRegion } from "./vision/exposure.js";
 import { OverlayCanvas } from "./ui/overlayCanvas.js";
 import { HintBar } from "./ui/hintBar.js";
 import { LayoutBadge } from "./ui/layoutBadge.js";
+import { ZoomControl } from "./ui/zoomControl.js";
 import { IntentPicker, CameraPicker } from "./ui/pickers.js";
 import { INTENTS, DEFAULT_INTENT } from "./intents.js";
 import { ALL, getLayout, layoutsFor } from "./layouts/index.js";
@@ -38,6 +39,7 @@ const el = {
   badge: $("layoutBadge"),
   intent: $("intentPicker"),
   camera: $("cameraPicker"),
+  zoom: $("zoomControl"),
   shutter: $("shutter"),
   start: $("startBtn"),
   startScreen: $("startScreen"),
@@ -45,7 +47,7 @@ const el = {
   debug: $("debug"),
 };
 
-let overlay, hint, badge, intentPicker, cameraPicker, planner, debugTimer;
+let overlay, hint, badge, intentPicker, cameraPicker, zoomControl, planner, debugTimer;
 
 /** 目前的狀態。改變時呼叫 render() 重畫。 */
 const state = {
@@ -117,6 +119,9 @@ async function onCameraReady() {
   cameraPicker = new CameraPicker(el.camera, onCameraSwitch);
   cameraPicker.setDevices(await devices.list(), camera.currentDevice());
 
+  zoomControl = new ZoomControl(el.zoom, camera.setZoom);
+  zoomControl.configure(camera.zoomInfo());
+
   hint.set("正在看畫面…", "info");
   updateLightBar();      // 先顯示「分析光線中」，讓使用者知道它在跑
   render();
@@ -180,6 +185,7 @@ async function onCameraSwitch(deviceId) {
   try {
     const res = await camera.switchTo(el.video, deviceId, onCameraLost);
     console.log(`切換完成 ${res.width}x${res.height}`);
+    zoomControl?.configure(camera.zoomInfo());
     resetSceneMemory();
     hint.set("正在看畫面…", "info");
   } catch (err) {
@@ -188,6 +194,7 @@ async function onCameraSwitch(deviceId) {
     // 切換失敗就回到原本能用的鏡頭
     try {
       await camera.start(el.video, onCameraLost);
+      zoomControl?.configure(camera.zoomInfo());
     } catch { /* 真的救不回來就交給 onCameraLost */ }
   } finally {
     planner?.start();
@@ -198,6 +205,7 @@ function onCameraLost() {
   planner?.stop();
   hint?.set("相機中斷了", "warn");
   overlay?.clear();
+  el.zoom?.classList.add("hidden");
   el.startScreen.classList.remove("hidden");
   el.error.textContent =
     "相機串流中斷了。常見原因是其他程式搶走相機，" +
@@ -344,17 +352,32 @@ function updateLightBar() {
 // ── 拍照 ────────────────────────────────────────────
 
 function capture() {
+  // 預覽使用 object-fit: cover。原始相機影格通常是橫向 4:3，
+  // 直式手機上只會看見它中央的一條；以前這裡直接保存完整影格，
+  // 因此使用者看到直式構圖，下載後卻變成完全不同的橫式照片。
+  // visibleRegion() 和送給 VLM／曝光分析共用同一套裁切算法，
+  // 保證「畫面看到的範圍」就是「最後存下來的範圍」。
+  const { sx, sy, sw, sh } = visibleRegion(el.video);
   const c = document.createElement("canvas");
-  c.width = el.video.videoWidth;
-  c.height = el.video.videoHeight;
-  c.getContext("2d").drawImage(el.video, 0, 0);
+  c.width = Math.max(1, Math.round(sw));
+  c.height = Math.max(1, Math.round(sh));
+  c.getContext("2d").drawImage(
+    el.video,
+    sx, sy, sw, sh,
+    0, 0, c.width, c.height
+  );
   c.toBlob((blob) => {
+    if (!blob) {
+      hint.set("拍照失敗，請再試一次", "warn");
+      return;
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = `snapfit-${Date.now()}.jpg`;
     a.click();
-    URL.revokeObjectURL(url);
+    // iOS/Android 有時要等下載工作真正接手後才能撤銷網址。
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
     hint.set("已拍照", "good");
   }, "image/jpeg", 0.92);
 }

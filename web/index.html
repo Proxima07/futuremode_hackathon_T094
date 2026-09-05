@@ -21,6 +21,15 @@
   </div>
   <div id="layoutBadge" class="badge"></div>
 
+  <div id="zoomControl" class="zoom-control hidden"
+       role="group" aria-label="相機縮放">
+    <button id="zoomOut" type="button" aria-label="縮小">−</button>
+    <input id="zoomRange" type="range" min="1" max="1" step="0.1"
+           value="1" aria-label="相機縮放倍率">
+    <button id="zoomIn" type="button" aria-label="放大">＋</button>
+    <span id="zoomValue" aria-live="polite">1.0×</span>
+  </div>
+
   <div id="lightBar" class="hidden"></div>
   <div id="hint"></div>
 
