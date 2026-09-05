@@ -403,9 +403,9 @@ def validate_light(raw: dict | None) -> dict | None:
     """光線分析的驗證。/api/light 專用。
 
     除了列舉值比對，還要壓掉幾種自相矛盾的輸出：
-      - 說沒問題卻要求補光
-      - 說沒問題卻填了 issue
-      - 說有問題卻沒填 issue
+      - 有風格卻同時指出偏暗：保留問題與補光建議
+      - 說有問題卻沒填 issue：保留提醒，不自動降級為光線良好
+      - 缺少有效判斷：回傳 None，不能當作 good
     """
     if not isinstance(raw, dict):
         return None
@@ -416,9 +416,11 @@ def validate_light(raw: dict | None) -> dict | None:
         # 直接給了問題類型，當成 problem 處理
         verdict, issue = "problem", raw_verdict
     elif raw_verdict == "ok":
-        verdict, issue = "good", "none"
+        verdict, issue = "good", enum(raw.get("issue"), LIGHT_ISSUE, "none")
     else:
-        verdict = enum(raw_verdict, LIGHT_VERDICT, "good")
+        if raw_verdict not in LIGHT_VERDICT:
+            return None
+        verdict = raw_verdict
         issue = enum(raw.get("issue"), LIGHT_ISSUE, "none")
 
     light = {
@@ -434,13 +436,20 @@ def validate_light(raw: dict | None) -> dict | None:
     }
 
     # ── 壓掉自相矛盾 ──────────────────────────
+    if light["issue"] != "none":
+        light["verdict"] = "problem"
     if light["verdict"] != "problem":
-        light["issue"] = "none"
-        light["fill_from"] = "none"     # 沒問題就不該要求補光
-    elif light["issue"] == "none":
-        # 說有問題卻沒說是什麼問題，降級成 stylish 比較安全
-        light["verdict"] = "stylish"
         light["fill_from"] = "none"
+    elif not light["tip"]:
+        light["tip"] = {
+            "too_dark": "保留環境色調，從正面加一點柔光照亮主體",
+            "backlit": "保留背後輪廓光，從正面少量補光",
+            "too_bright": "減弱直射主體的光，保留亮部細節",
+            "harsh": "用白紙在暗側反光，柔化主體陰影",
+            "flat": "讓光從側面照主體，增加明暗層次",
+        }.get(light["issue"], "先確認主體亮暗與細節，再調整光線")
+    if light["issue"] in {"too_dark", "backlit"} and light["fill_from"] == "none":
+        light["fill_from"] = "front"
 
     return light
 

@@ -213,6 +213,7 @@ export class RemotePlanner {
       const ctx = this.getContext?.() ?? {};
       this.lastExposure = measure(this.video, ctx.subjectBox ?? null);
       this.lightMonitor.observe(this.lastExposure, {stable: this.previewStable});
+      this.on.onExposure?.(this.lastExposure, {stable: this.previewStable});
     }
   }
 

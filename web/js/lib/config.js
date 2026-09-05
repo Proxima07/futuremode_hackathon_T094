@@ -7,7 +7,7 @@
 
 export const CONFIG = {
   /** 版本戳記。console 會印出來，用來確認載入的不是快取的舊檔 */
-  BUILD: "v0.32",
+  BUILD: "v0.33",
 
   /** 快層迴圈的頻率。10 次/秒足夠流暢，又不會把手機電力燒光 */
   FPS: 10,
@@ -24,10 +24,17 @@ export const CONFIG = {
   /** 本機小縮圖每 250ms 看一次移動；遠端構圖仍以一秒為目標。 */
   SCAN_INTERVAL_MS: 250,
 
+  /** 明確操作指示至少顯示多久（毫秒）；只管閱讀時間，不減慢背景判斷。 */
+  GUIDANCE_HOLD_MS: 5000,
+
   /** 每秒只在本機算曝光；首次／明顯且持續的光線變化才送 /api/light。 */
   LIGHT_CHECK_INTERVAL_MS: 1000,
   LIGHT_CHANGE: { confirmations: 3, minIntervalMs: 15000,
-    meanDelta: .10, colorDelta: .16, directionDelta: .14, clipDelta: .12 },
+    meanDelta: .10, subjectDelta: .12, colorDelta: .16, directionDelta: .14, clipDelta: .12 },
+  /** 本機偏暗提醒：連續兩次成立／恢復才切換。是影像亮度近似值，非照度計。 */
+  LIGHT_READABILITY: { confirmations: 2, recoveryConfirmations: 2,
+    darkMean: .20, darkSubject: .26, backlitSubject: .28, backlitRatio: .55,
+    recoveryMargin: .04 },
   /** 沒有空檔時，至少先完成八次構圖才讓待處理的光線事件插入。 */
   LIGHT_PLAN_BUDGET: 8,
   /** 太舊的照片即使形狀相似也不再套用，避免呈現十秒前的判斷。 */

@@ -17,6 +17,7 @@ import { warmup, resetSceneMemory } from "./lib/api.js";
 import { RemotePlanner } from "./planner/remotePlanner.js";
 import { PlanStabilizer, PLAN_PHASE } from "./planner/planStabilizer.js";
 import { summarize, visibleRegion } from "./vision/exposure.js";
+import { ExposureGuard } from "./vision/exposureGuard.js";
 import { OverlayCanvas } from "./ui/overlayCanvas.js";
 import { HintBar } from "./ui/hintBar.js";
 import { LayoutBadge } from "./ui/layoutBadge.js";
@@ -53,6 +54,7 @@ const el = {
 
 let overlay, hint, badge, intentPicker, cameraPicker, zoomControl, planner, debugTimer;
 const stabilizer = new PlanStabilizer(CONFIG.STABILITY);
+const exposureGuard = new ExposureGuard(CONFIG.LIGHT_READABILITY);
 
 /** 目前的狀態。改變時呼叫 render() 重畫。 */
 const state = {
@@ -70,6 +72,7 @@ const state = {
   advice: "",
   scene: "",
   light: null,
+  exposureIssue: "",
   fit: "good",
   lastPlanAt: 0,
 };
@@ -154,14 +157,15 @@ async function onCameraReady() {
   });
   zoomControl.configure(camera.zoomInfo());
 
-  hint.set("正在看畫面…", "info");
+  state.light = null;
+  hint.set("正在看畫面…", "info", {immediate: true});
   updateLightBar();      // 先顯示「分析光線中」，讓使用者知道它在跑
   render();
   warmup();
 
   planner ??= new RemotePlanner(el.video, getPlanContext, {
     onPlan, onLight, onCustom, onViewChanged: resumeForView,
-    onActivity: updateAnalysisStatus, onPlanDeferred,
+    onActivity: updateAnalysisStatus, onPlanDeferred, onExposure,
   });
   planner.resetLighting();
   startAnalysis();
@@ -176,6 +180,9 @@ el.reanalyze.addEventListener("click", () => startAnalysis());
 window.addEventListener("orientationchange", () => resumeForView());
 
 function onManualPick(picked) {
+  hint?.clear();
+  exposureGuard.reset();
+  state.exposureIssue = "";
   state.baseLayout = picked;
   state.layout = picked;
   state.items = {};
@@ -192,6 +199,9 @@ function onManualPick(picked) {
 
 /** 只有明確重新分析／情境切換／主體持續消失，才重新選目標。 */
 function startAnalysis({ preserveManual = false } = {}) {
+  hint?.clear();
+  exposureGuard.reset();
+  state.exposureIssue = "";
   state.viewPending = false;
   state.items = {};
   state.features = {};
@@ -215,6 +225,7 @@ function startAnalysis({ preserveManual = false } = {}) {
 
 /** 移動／縮放只撤銷 READY，不重新選交點。 */
 function resumeForView() {
+  hint?.clear();
   stabilizer.resumeGuiding();
   state.progress = "resumed";
   state.awaitingCustom = false;
@@ -233,12 +244,16 @@ function onPlanDeferred({reason = "moving"} = {}) {
 
 function syncPhase() {
   const phase = stabilizer.phase;
+  const light = effectiveLight();
+  const lightReady = !!light && light.verdict !== "problem";
   badge?.setPhase(phase);
   el.status.dataset.phase = phase;
   el.status.textContent = {
-    searching: "選擇構圖中", guiding: "目標已固定", ready: "✓ 可以拍攝",
+    searching: "選擇構圖中", guiding: "目標已固定",
+    ready: !light ? "構圖已到位・確認光線中"
+      : lightReady ? "✓ 可以拍攝" : "構圖已到位・光線待調整",
   }[phase];
-  el.shutter.dataset.ready = String(phase === PLAN_PHASE.READY);
+  el.shutter.dataset.ready = String(phase === PLAN_PHASE.READY && lightReady);
   updateHint(state.items);
   updateLightBar();
   render();
@@ -368,6 +383,7 @@ async function onCameraSwitch(deviceId) {
 }
 
 function onCameraLost() {
+  hint?.clear();
   planner?.stop();
   stabilizer.reset();
   hint?.set("相機中斷了", "warn");
@@ -434,7 +450,33 @@ function onPlan(plan) {
 /** 光線分析回來。獨立路徑，不影響版型 */
 function onLight(light) {
   state.light = light;
-  updateLightBar();
+  syncPhase();
+}
+
+/** 現有的每秒本機曝光取樣，不增加遠端請求。 */
+function onExposure(exposure, options = {}) {
+  const issue = exposureGuard.observe(exposure, {
+    ...options, hasSubject: Object.keys(state.items).length > 0,
+  });
+  if (issue !== state.exposureIssue) {
+    state.exposureIssue = issue;
+    syncPhase();
+  }
+}
+
+/** 明確的模型問題優先；本機提醒補足模型漏判，構圖到位不等於光線完成。 */
+function effectiveLight() {
+  if (state.light?.verdict === "problem") return state.light;
+  if (state.exposureIssue) {
+    return {
+      ...state.light, verdict: "problem", issue: state.exposureIssue,
+      fill_from: "front", shoot_from: "keep",
+      tip: state.exposureIssue === "backlit"
+        ? "主體區域比背景暗，可從正面加一點柔光"
+        : "畫面偏暗，建議從正面補柔光，確認主體細節",
+    };
+  }
+  return state.light;
 }
 
 /**
@@ -486,11 +528,17 @@ function updateHint(items) {
   if (state.viewPending) {
     hint.set(state.progress === "expired"
       ? "沿用固定目標，正在確認最新畫面"
-      : "位置已改變，停穩一下確認是否到位", "info");
+      : "位置已改變，停穩一下確認是否到位", "info", {
+        immediate: state.progress === "expired" || hint.tone === "good",
+      });
     return;
   }
   if (stabilizer.phase === PLAN_PHASE.READY) {
-    hint.set("構圖完成，可以拍攝", "good");
+    const light = effectiveLight();
+    hint.set(!light ? "構圖已到位，正在確認光線"
+      : light.verdict === "problem" ? "構圖已到位，先依上方提示調整光線"
+      : "構圖完成，可以拍攝", light?.verdict === "problem" ? "warn"
+        : light ? "good" : "info", {immediate: true});
     return;
   }
   if (state.awaitingCustom) {
@@ -504,11 +552,11 @@ function updateHint(items) {
     return;
   }
   if (state.progress === "lost_pending") {
-    hint.set("暫時找不到原主體，請讓它回到畫面", "warn");
+    hint.set("暫時找不到原主體，請讓它回到畫面", "warn", {immediate: true});
     return;
   }
   if (state.progress === "ready_pending") {
-    hint.set("已接近目標，保持一下確認構圖…", "info");
+    hint.set("已接近目標，保持一下確認構圖…", "info", {immediate: true});
     return;
   }
   if (state.progress === "guidance_pending") {
@@ -521,9 +569,9 @@ function updateHint(items) {
   }
   // 優先序：該移走什麼 > 構圖建議 > 通用提示
   if (state.remove.length) {
-    hint.set(`把${state.remove[0]}移出畫面`, "warn");
+    hint.set(`把${state.remove[0]}移出畫面`, "warn", {holdMs: CONFIG.GUIDANCE_HOLD_MS ?? 5000});
   } else if (state.advice) {
-    hint.set(state.advice, "info");
+    hint.set(state.advice, "info", {holdMs: CONFIG.GUIDANCE_HOLD_MS ?? 5000});
   } else if (Object.keys(items).length) {
     hint.set(
       state.layout.guideOnly
@@ -558,16 +606,7 @@ function updateHint(items) {
  * ────────────────────────────────────────────────
  */
 function updateLightBar() {
-  const l = state.light;
-
-  if (stabilizer.phase === PLAN_PHASE.READY) {
-    el.light.textContent = l?.verdict === "problem"
-      ? "構圖已完成；拍攝前仍請確認主體亮度"
-      : "保持目前構圖，確認清晰後按快門";
-    el.light.dataset.level = l?.verdict === "problem" ? "warn" : "good";
-    el.light.classList.remove("hidden");
-    return;
-  }
+  const l = effectiveLight();
 
   if (!l) {
     el.light.textContent = "分析光線中…";
@@ -592,13 +631,13 @@ function updateLightBar() {
     level = "style";
     // 風格要先被指認出來，使用者才知道系統懂他在什麼場合
     parts.push(`${envIcon} ${l.mood || envName}`.trim());
-    if (choosing && l.tip) parts.push(l.tip);
+    if (l.tip) parts.push(l.tip);
   } else {
     // good：不用改，那就說點有用的——光從哪來
     parts.push(
       LIGHT_TEXT.source[l.source] || (envName ? envIcon + " " + envName : "光線良好")
     );
-    if (choosing && l.tip) parts.push(l.tip);
+    if (l.tip) parts.push(l.tip);
   }
 
   if (choosing && l.shoot_from !== "keep") {
@@ -629,7 +668,7 @@ function capture() {
   );
   c.toBlob((blob) => {
     if (!blob) {
-      hint.set("拍照失敗，請再試一次", "warn");
+      hint.set("拍照失敗，請再試一次", "warn", {immediate: true});
       return;
     }
     const url = URL.createObjectURL(blob);
@@ -639,7 +678,7 @@ function capture() {
     a.click();
     // iOS/Android 有時要等下載工作真正接手後才能撤銷網址。
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    hint.set("已拍照", "good");
+    hint.set("已拍照", "good", {immediate: true});
   }, "image/jpeg", 0.92);
 }
 

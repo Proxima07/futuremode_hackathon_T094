@@ -1,7 +1,7 @@
 /** 本機曝光統計觸發器。靜態光線不會因時間到了就再呼叫 VLM。 */
 const DEFAULTS = {
   confirmations: 3, minIntervalMs: 15000,
-  meanDelta: .10, colorDelta: .16, directionDelta: .14, clipDelta: .12,
+  meanDelta: .10, subjectDelta: .12, colorDelta: .16, directionDelta: .14, clipDelta: .12,
 };
 
 export function lightingChange(a, b, options = DEFAULTS) {
@@ -10,6 +10,7 @@ export function lightingChange(a, b, options = DEFAULTS) {
   const delta = (key) => (b[key] ?? 0) - (a[key] ?? 0);
   if (Math.abs(delta("mean")) >= o.meanDelta) return delta("mean") > 0 ? "brighter" : "darker";
   if (Math.abs(delta("clipped_high")) >= o.clipDelta || Math.abs(delta("clipped_low")) >= o.clipDelta) return "clipping";
+  if (Number.isFinite(a.subject) && Number.isFinite(b.subject) && Math.abs(delta("subject")) >= o.subjectDelta) return "subject";
   if (Math.abs(delta("warmth")) >= o.colorDelta || Math.abs(delta("saturation")) >= o.colorDelta) return "color";
   if (a.color_ratio > .2 && b.color_ratio > .2 && a.dominant_hue >= 0 && b.dominant_hue >= 0) {
     const hue = Math.abs(a.dominant_hue - b.dominant_hue);

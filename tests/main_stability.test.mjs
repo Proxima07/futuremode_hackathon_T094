@@ -11,6 +11,7 @@ import { ALL, getLayout, layoutsFor } from "../web/js/layouts/index.js";
 import { applyAdjust, toLayout } from "../web/js/layouts/adjust.js";
 import { LIGHT_TEXT } from "../web/js/guidance/phrases.js";
 import { CONFIG } from "../web/js/lib/config.js";
+import { ExposureGuard } from "../web/js/vision/exposureGuard.js";
 
 function element() {
   return { dataset: {}, style: {}, textContent: "", children: [], disabled: false,
@@ -26,7 +27,7 @@ function app() {
   const source = readFileSync(new URL("../web/js/main.js", import.meta.url), "utf8")
     .replace(/^import .*;\r?$/gm, "");
   const sandbox = { document, window: {addEventListener() {}}, console: {log() {}, warn() {}, error() {}},
-    performance, setTimeout, clearInterval, setInterval,
+    performance, setTimeout, clearTimeout, clearInterval, setInterval, ExposureGuard,
     PlanStabilizer, PLAN_PHASE, LayoutBadge, HintBar, INTENTS, DEFAULT_INTENT,
     ALL, getLayout, layoutsFor, applyAdjust, toLayout, LIGHT_TEXT, CONFIG,
     resetSceneMemory() {}, camera: {}, devices: {} };
@@ -36,9 +37,9 @@ function app() {
     overlay = { clear() {}, draw(layout, opts) { this.latest = { layout, opts }; } };
     planner = { planPaused: false, invalidate() { this.planPaused = false; }, resetLighting() {},
       setPlanPaused(value) { this.planPaused = value; } };
-    globalThis.harness = { state, el, stabilizer, badge, planner, overlay,
+    globalThis.harness = { state, el, stabilizer, badge, planner, overlay, hint,
       onPlan, onCustom, onLight, getPlanContext, startAnalysis, resumeForView,
-      onIntentChange, onManualPick, updateAnalysisStatus, onPlanDeferred };
+      onIntentChange, onManualPick, updateAnalysisStatus, onPlanDeferred, onExposure };
   `, sandbox);
   return sandbox.harness;
 }
@@ -48,7 +49,10 @@ const plan = (extra = {}) => ({layout: "rule_thirds", fit: "adjust",
   alignment: "move", action: "move_left", advice: "杯標往左，靠近右下交點",
   placements: [{slot: "main", item: "飲料杯", feature: "杯標中心"}], remove: [], ...extra});
 const ready = () => plan({alignment: "ready", action: "none", advice: ""});
-const lock = (a) => { a.onPlan(plan()); a.onPlan(plan()); };
+const lock = (a) => {
+  a.onLight({verdict: "good", source: "left", issue: "none", fill_from: "none", tip: ""});
+  a.onPlan(plan()); a.onPlan(plan());
+};
 
 test("actual UI freezes all geometry and subject features through repeated LLM changes", () => {
   const a = app(); lock(a);
@@ -61,7 +65,7 @@ test("actual UI freezes all geometry and subject features through repeated LLM c
   assert.equal(a.getPlanContext().phase, "guiding");
 });
 
-test("actual UI announces ready, marks shutter, freezes light advice and keeps shutter usable", () => {
+test("actual UI announces ready with checked lighting and preserves useful light advice", () => {
   const a = app(); lock(a);
   a.onPlan(ready());
   assert.match(a.el.hint.textContent, /保持一下/);
@@ -71,8 +75,8 @@ test("actual UI announces ready, marks shutter, freezes light advice and keeps s
   assert.equal(a.el.shutter.disabled, false);
   assert.equal(a.planner.planPaused, true);
   assert.equal(a.overlay.latest.opts.aligned.main, true);
-  a.onLight({verdict: "stylish", tip: "再往低一點拍"});
-  assert.doesNotMatch(a.el.light.textContent, /往低/);
+  a.onLight({verdict: "stylish", tip: "可用白紙在暗側反光，保留暖黃氛圍"});
+  assert.match(a.el.light.textContent, /白紙在暗側反光/);
   assert.equal(a.state.light.verdict, "stylish");
 });
 
@@ -151,8 +155,8 @@ test("new response time does not pretend that a stale frame has been applied", (
     activeKind: "plan", lastPlanResponseAt: performance.now(), lastPlanResultAt: performance.now() - 10000});
   assert.match(a.el.analysis.textContent, /確認新位置/);
   assert.doesNotMatch(a.el.analysis.textContent, /10\.0 秒前/);
-  a.onPlanDeferred({reason: "moving"});
-  assert.match(a.el.hint.textContent, /位置已改變/);
+  a.onPlanDeferred({reason: "expired"});
+  assert.match(a.el.hint.textContent, /確認最新畫面/);
   assert.doesNotMatch(a.el.hint.textContent, /往左/);
 });
 
@@ -177,10 +181,10 @@ test("HTTP 200 fallback is shown as unfinished analysis, not a new valid judgmen
   assert.match(a.el.analysis.textContent, /分析未完成/);
 });
 
-test("waiting for a changed direction never brings back the old movement instruction", () => {
+test("expired directions are removed immediately while waiting for a new confirmed direction", () => {
   const a = app(); lock(a);
   const geometry = JSON.stringify(a.state.layout);
-  a.onPlanDeferred({reason: "moving"});
+  a.onPlanDeferred({reason: "expired"});
   const correction = plan({action: "move_right", advice: "再往右一點"});
   a.onPlan(correction);
   assert.equal(a.state.progress, "guidance_pending");
@@ -189,4 +193,48 @@ test("waiting for a changed direction never brings back the old movement instruc
   a.onPlan(correction);
   assert.equal(a.el.hint.textContent, "再往右一點");
   assert.equal(JSON.stringify(a.state.layout), geometry);
+});
+
+test("composition READY waits for initial lighting without disabling manual capture", () => {
+  const a = app(); a.onPlan(plan()); a.onPlan(plan());
+  a.onPlan(ready()); a.onPlan(ready());
+  assert.equal(a.stabilizer.phase, "ready");
+  assert.equal(a.el.shutter.dataset.ready, "false");
+  assert.equal(a.el.shutter.disabled, false);
+  assert.match(a.el.status.textContent, /確認光線/);
+  assert.doesNotMatch(a.el.hint.textContent, /可以拍攝/);
+  a.onLight({verdict: "good", source: "left"});
+  assert.equal(a.el.shutter.dataset.ready, "true");
+});
+
+test("READY retains exact fill advice and fixed geometry, then recovers when light improves", () => {
+  const a = app(); lock(a); a.onPlan(ready()); a.onPlan(ready());
+  const geometry = JSON.stringify(a.state.layout), session = a.stabilizer.sessionId;
+  a.onLight({verdict: "problem", issue: "too_dark", fill_from: "front",
+    tip: "保留藍紫背景，從正面加一點柔光照亮杯身"});
+  assert.match(a.el.light.textContent, /正面加一點柔光/);
+  assert.match(a.el.status.textContent, /光線待調整/);
+  assert.equal(a.el.shutter.dataset.ready, "false");
+  assert.equal(a.el.shutter.disabled, false);
+  assert.equal(JSON.stringify(a.state.layout), geometry);
+  assert.equal(a.stabilizer.sessionId, session);
+  a.onLight({verdict: "stylish", mood: "藍紫光", tip: "可讓光從側面照杯身"});
+  assert.equal(a.el.shutter.dataset.ready, "true");
+  assert.match(a.el.light.textContent, /從側面照杯身/);
+});
+
+test("sustained local darkness overrides a model good verdict; a single flash does not", () => {
+  const a = app(); lock(a); a.onPlan(ready()); a.onPlan(ready());
+  const dark = {mean: .12, subject: .15, subject_ratio: 1};
+  const bright = {mean: .4, subject: .4, subject_ratio: 1};
+  a.onExposure(dark);
+  assert.equal(a.el.shutter.dataset.ready, "true");
+  a.onExposure(bright);
+  a.onExposure(dark); a.onExposure(dark);
+  assert.equal(a.el.shutter.dataset.ready, "false");
+  assert.match(a.el.light.textContent, /畫面偏暗.*補柔光/);
+  a.onLight({verdict: "good"});
+  assert.equal(a.el.shutter.dataset.ready, "false");
+  a.onExposure(bright); a.onExposure(bright);
+  assert.equal(a.el.shutter.dataset.ready, "true");
 });
